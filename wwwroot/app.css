@@ -1,0 +1,15 @@
+/* SuperTrigger.Web custom styles */
+
+html, body {
+    font-family: Roboto, sans-serif;
+    height: 100%;
+}
+
+.mud-main-content {
+    padding-top: 64px; /* AppBar height */
+}
+
+/* Tight data grids */
+.mud-table-dense td, .mud-table-dense th {
+    padding: 4px 8px !important;
+}

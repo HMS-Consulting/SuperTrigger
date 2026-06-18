@@ -1,0 +1,204 @@
+@page "/users"
+@attribute [Authorize(Roles = "Admin,Operator")]
+@inject IDbContextFactory<AppDbContext> DbFactory
+@inject AdSearchService AdSearch
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+@inject AuthenticationStateProvider AuthProvider
+
+<PageTitle>Users & Access - SuperTrigger</PageTitle>
+
+<MudText Typo="Typo.h5" Class="mb-4">Users & Access Control</MudText>
+
+<MudGrid>
+    <!-- Local Admin -->
+    <AuthorizeView Roles="Admin">
+    <MudItem xs="12" md="6">
+        <MudPaper Class="pa-4">
+            <MudText Typo="Typo.h6" Class="mb-3">Local Admin Password</MudText>
+            <MudTextField @bind-Value="_newPassword" Label="New Password" InputType="InputType.Password" />
+            <MudTextField @bind-Value="_confirmPassword" Label="Confirm Password" InputType="InputType.Password" Class="mt-2" />
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="ChangePasswordAsync" Class="mt-3">
+                Change Password
+            </MudButton>
+        </MudPaper>
+    </MudItem>
+    </AuthorizeView>
+
+    <!-- AD Access Control -->
+    <MudItem xs="12">
+        <MudPaper Class="pa-4">
+            <MudText Typo="Typo.h6" Class="mb-3">Active Directory Access</MudText>
+
+            <AuthorizeView Roles="Admin">
+                <div class="d-flex gap-2 align-center mb-3">
+                    <MudTextField @bind-Value="_adSearchQuery" Label="Search AD users or groups" Immediate="true"
+                                  DebounceInterval="400" OnDebounceIntervalElapsed="SearchAd"
+                                  Adornment="Adornment.End" AdornmentIcon="@Icons.Material.Filled.Search" Style="max-width:400px" />
+                </div>
+
+                @if (_adResults.Count > 0)
+                {
+                    <MudTable Items="_adResults" Dense="true" Hover="true" Class="mb-4">
+                        <HeaderContent>
+                            <MudTh>Type</MudTh>
+                            <MudTh>Identifier</MudTh>
+                            <MudTh>Display Name</MudTh>
+                            <MudTh>Role</MudTh>
+                            <MudTh></MudTh>
+                        </HeaderContent>
+                        <RowTemplate Context="adEntry">
+                            <MudTd>@(adEntry.IsGroup ? "Group" : "User")</MudTd>
+                            <MudTd>@adEntry.Identifier</MudTd>
+                            <MudTd>@adEntry.DisplayName</MudTd>
+                            <MudTd>
+                                <MudSelect T="AppRole" @bind-Value="_addRoleMap[adEntry.Identifier]" Dense="true">
+                                    <MudSelectItem Value="AppRole.Admin">Admin</MudSelectItem>
+                                    <MudSelectItem Value="AppRole.Operator">Operator</MudSelectItem>
+                                    <MudSelectItem Value="AppRole.Viewer">Viewer</MudSelectItem>
+                                </MudSelect>
+                            </MudTd>
+                            <MudTd>
+                                <MudButton Size="Size.Small" Color="Color.Primary" OnClick="@(() => AddPrincipalAsync(adEntry))">
+                                    Add
+                                </MudButton>
+                            </MudTd>
+                        </RowTemplate>
+                    </MudTable>
+                }
+            </AuthorizeView>
+
+            <MudText Typo="Typo.subtitle1" Class="mb-2">Authorized Principals</MudText>
+            <MudTable Items="_principals" Dense="true" Hover="true" Striped="true">
+                <HeaderContent>
+                    <MudTh>Type</MudTh>
+                    <MudTh>Identifier</MudTh>
+                    <MudTh>Display Name</MudTh>
+                    <MudTh>Role</MudTh>
+                    <MudTh>Added</MudTh>
+                    <AuthorizeView Roles="Admin"><MudTh>Actions</MudTh></AuthorizeView>
+                </HeaderContent>
+                <RowTemplate>
+                    <MudTd>@context.Type</MudTd>
+                    <MudTd>@context.Identifier</MudTd>
+                    <MudTd>@context.DisplayName</MudTd>
+                    <MudTd>
+                        <AuthorizeView Roles="Admin" Context="authCtx">
+                            <Authorized>
+                                <MudSelect T="AppRole" Value="context.Role" Dense="true"
+                                           ValueChanged="@(r => ChangeRoleAsync(context, r))">
+                                    <MudSelectItem Value="AppRole.Admin">Admin</MudSelectItem>
+                                    <MudSelectItem Value="AppRole.Operator">Operator</MudSelectItem>
+                                    <MudSelectItem Value="AppRole.Viewer">Viewer</MudSelectItem>
+                                </MudSelect>
+                            </Authorized>
+                            <NotAuthorized>
+                                <MudText>@context.Role</MudText>
+                            </NotAuthorized>
+                        </AuthorizeView>
+                    </MudTd>
+                    <MudTd>@context.AddedAt.ToString("dd/MM/yyyy")</MudTd>
+                    <AuthorizeView Roles="Admin" Context="authCtx2">
+                        <MudTd>
+                            <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error"
+                                           OnClick="@(() => RemovePrincipalAsync(context))" />
+                        </MudTd>
+                    </AuthorizeView>
+                </RowTemplate>
+            </MudTable>
+        </MudPaper>
+    </MudItem>
+</MudGrid>
+
+@code {
+    private string _newPassword = "";
+    private string _confirmPassword = "";
+    private string _adSearchQuery = "";
+    private List<AdEntry> _adResults = [];
+    private Dictionary<string, AppRole> _addRoleMap = [];
+    private List<AdPrincipal> _principals = [];
+
+    protected override async Task OnInitializedAsync() => await LoadPrincipalsAsync();
+
+    private async Task LoadPrincipalsAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        _principals = await db.AdPrincipals.OrderBy(p => p.Identifier).ToListAsync();
+    }
+
+    private async Task ChangePasswordAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_newPassword) || _newPassword != _confirmPassword)
+        {
+            Snackbar.Add("Passwords do not match or are empty", Severity.Warning);
+            return;
+        }
+
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var authState = await AuthProvider.GetAuthenticationStateAsync();
+        var username = authState.User.Identity?.Name ?? "admin";
+        var user = await db.LocalUsers.FirstOrDefaultAsync(u => u.Username == username);
+        if (user == null) return;
+
+        user.PasswordHash = BCrypt.Net.BCrypt.HashPassword(_newPassword);
+        await db.SaveChangesAsync();
+        _newPassword = _confirmPassword = "";
+        Snackbar.Add("Password changed", Severity.Success);
+    }
+
+    private void SearchAd()
+    {
+        _adResults = AdSearch.Search(_adSearchQuery);
+        if (AdSearch.LastError != null)
+            Snackbar.Add($"AD search failed: {AdSearch.LastError}", Severity.Warning);
+        foreach (var r in _adResults)
+            _addRoleMap.TryAdd(r.Identifier, AppRole.Viewer);
+    }
+
+    private async Task AddPrincipalAsync(AdEntry entry)
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        if (await db.AdPrincipals.AnyAsync(p => p.Identifier == entry.Identifier))
+        {
+            Snackbar.Add("Already added", Severity.Info);
+            return;
+        }
+        db.AdPrincipals.Add(new AdPrincipal
+        {
+            Identifier = entry.Identifier,
+            DisplayName = entry.DisplayName,
+            Type = entry.IsGroup ? AdPrincipalType.Group : AdPrincipalType.User,
+            Role = _addRoleMap.GetValueOrDefault(entry.Identifier, AppRole.Viewer)
+        });
+        await db.SaveChangesAsync();
+        Snackbar.Add("Added", Severity.Success);
+        await LoadPrincipalsAsync();
+    }
+
+    private async Task ChangeRoleAsync(AdPrincipal principal, AppRole newRole)
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var p = await db.AdPrincipals.FindAsync(principal.Id);
+        if (p == null) return;
+        p.Role = newRole;
+        await db.SaveChangesAsync();
+        principal.Role = newRole;
+    }
+
+    private async Task RemovePrincipalAsync(AdPrincipal principal)
+    {
+        var result = await DialogService.ShowMessageBox("Confirm Remove",
+            $"Remove access for '{principal.Identifier}'?", "Remove", cancelText: "Cancel");
+        if (result != true) return;
+
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var p = await db.AdPrincipals.FindAsync(principal.Id);
+        if (p != null)
+        {
+            db.AdPrincipals.Remove(p);
+            await db.SaveChangesAsync();
+            Snackbar.Add("Removed", Severity.Info);
+            await LoadPrincipalsAsync();
+        }
+    }
+}

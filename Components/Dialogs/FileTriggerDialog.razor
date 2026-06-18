@@ -1,0 +1,90 @@
+@using Microsoft.EntityFrameworkCore
+@using MudBlazor
+@using SuperTrigger.Web.Data
+@using SuperTrigger.Web.Data.Entities
+@inject IDbContextFactory<AppDbContext> DbFactory
+@inject IDialogService DialogService
+@inject ISnackbar Snackbar
+
+<MudDialog>
+    <TitleContent>
+        <MudText Typo="Typo.h6">@(EditModel.Id == 0 ? "Add" : "Edit") File Trigger</MudText>
+    </TitleContent>
+    <DialogContent>
+        <MudForm @ref="_form" Class="d-flex flex-column gap-3" Style="min-width:420px">
+            <MudTextField @bind-Value="EditModel.TriggerName" Label="Trigger Name" Required="true" />
+            <MudTextField @bind-Value="EditModel.FolderPath" Label="Folder Path" Required="true" />
+            <MudTextField @bind-Value="EditModel.FileNameContains" Label="File Name Contains (prefix)" />
+            <TagInput @bind-Value="EditModel.FileTypes" Label="File Types" Placeholder="e.g. xlsx…" />
+            <MudTextField @bind-Value="EditModel.QueueName" Label="Queue Name" Required="true" />
+            <MudSelect T="string" @bind-Value="EditModel.Priority" Label="Priority">
+                <MudSelectItem Value="@("Low")">Low</MudSelectItem>
+                <MudSelectItem Value="@("Normal")">Normal</MudSelectItem>
+                <MudSelectItem Value="@("High")">High</MudSelectItem>
+            </MudSelect>
+            <MudTextField @bind-Value="EditModel.BusinessDepartmentName" Label="Business Department" Required="@EditModel.Active" />
+            <MudTextField @bind-Value="EditModel.BusinessProcessName" Label="Business Process" Required="@EditModel.Active" />
+            <MudTextField @bind-Value="EditModel.DivisionName" Label="Division (optional)" />
+            <MudTextField @bind-Value="EditModel.CompanyName" Label="Company (required if Division set)" />
+            <MudText Typo="Typo.subtitle2" Class="mt-1">Folder Access Credentials (optional)</MudText>
+            <MudText Typo="Typo.caption" Class="mb-1" Style="color:var(--mud-palette-text-secondary)">
+                Required only when the folder is on a network share that the application account cannot access.
+            </MudText>
+            <MudTextField @bind-Value="EditModel.WatcherUsername"
+                          Label="Username (DOMAIN\user or user@domain)"
+                          HelperText="Leave empty to use the application account" />
+            <MudTextField @bind-Value="EditModel.WatcherPassword"
+                          Label="Password"
+                          InputType="InputType.Password" />
+            <MudSwitch @bind-Value="EditModel.Active" Label="Active" Color="Color.Success" />
+        </MudForm>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="@(() => MudDialog.Cancel())">Cancel</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="SaveAsync">Save</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public FileTrigger EditModel { get; set; } = new();
+
+    private MudForm _form = default!;
+
+    private async Task SaveAsync()
+    {
+        await _form.Validate();
+        if (!_form.IsValid) return;
+
+        // If trigger is inactive and business fields are missing, ask for confirmation
+        if (!EditModel.Active &&
+            (string.IsNullOrWhiteSpace(EditModel.BusinessDepartmentName) ||
+             string.IsNullOrWhiteSpace(EditModel.BusinessProcessName)))
+        {
+            var confirm = await DialogService.ShowMessageBox(
+                "Missing Business Fields",
+                "Business Department and/or Business Process are missing. Save as inactive anyway?",
+                yesText: "Save",
+                cancelText: "Cancel");
+            if (confirm != true) return;
+        }
+
+        await using var db = await DbFactory.CreateDbContextAsync();
+        if (EditModel.Id == 0)
+            db.FileTriggers.Add(EditModel);
+        else
+            db.FileTriggers.Update(EditModel);
+
+        try
+        {
+            await db.SaveChangesAsync();
+        }
+        catch (DbUpdateException ex) when (ex.InnerException?.Message.Contains("UNIQUE constraint failed") == true)
+        {
+            Snackbar.Add($"A trigger named \"{EditModel.TriggerName}\" already exists.", Severity.Error);
+            return;
+        }
+
+        MudDialog.Close(EditModel);
+    }
+}

@@ -1,0 +1,385 @@
+@using Microsoft.EntityFrameworkCore
+@using MudBlazor
+@using SuperTrigger.Web.Data
+@using SuperTrigger.Web.Data.Entities
+@using SuperTrigger.Web.Services.Auth
+@inject IDbContextFactory<AppDbContext> DbFactory
+@inject MailOAuthService OAuthService
+@inject AppSettingsService SettingsService
+@inject NavigationManager Nav
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+@inject SuperTrigger.Web.Services.Graph.GraphMailService GraphMailService
+
+<MudDialog>
+    <TitleContent>
+        <MudText Typo="Typo.h6">@(EditModel.Id == 0 ? "Add" : "Edit") Mail Trigger</MudText>
+    </TitleContent>
+    <DialogContent>
+        <MudForm @ref="_form" Class="d-flex flex-column gap-3" Style="min-width:540px">
+
+            <MudTextField @bind-Value="EditModel.TriggerName" Label="Trigger Name" Required="true" />
+
+            <MudSelect T="string" Value="@EditModel.MailAuthMode" ValueChanged="@OnAuthModeChanged" Label="Authentication Mode" Required="true">
+                <MudSelectItem Value="@("Interactive")">Interactive / EWS (SSO or Username+Password)</MudSelectItem>
+                <MudSelectItem Value="@("OAuth2Interactive")">Microsoft Graph — Interactive Login (OAuth2)</MudSelectItem>
+                <MudSelectItem Value="@("AppIdGlobal")">Microsoft Graph — Global App ID (from Settings)</MudSelectItem>
+                <MudSelectItem Value="@("AppIdPerTrigger")">Microsoft Graph — Custom App ID (per trigger)</MudSelectItem>
+            </MudSelect>
+
+            @* ── Interactive / EWS ──────────────────────────────────────── *@
+            @if (EditModel.MailAuthMode == "Interactive")
+            {
+                <MudTextField @bind-Value="EditModel.UserName"
+                              Label="Username (UPN / email — leave empty for Windows SSO)" />
+                <MudTextField @bind-Value="EditModel.Password"
+                              Label="Password (leave empty to use Credential Manager)"
+                              InputType="InputType.Password" />
+                <MudTextField @bind-Value="EditModel.UserDomain" Label="Domain (optional)" />
+                <MudTextField T="string" Value="@EditModel.SharedMailBox" ValueChanged="@OnSharedMailBoxChanged" Label="Shared Mailbox (optional)" />
+                <MudTextField @bind-Value="EditModel.CustomMailServer"
+                              Label="Custom Mail Server URL (overrides global)" />
+                <MudTextField @bind-Value="EditModel.CustomMailServerVersion"
+                              Label="Custom Exchange Version (overrides global)" />
+            }
+
+            @* ── OAuth2 Interactive ─────────────────────────────────────── *@
+            @if (EditModel.MailAuthMode == "OAuth2Interactive")
+            {
+                <MudTextField @bind-Value="EditModel.AzureTenantId"
+                              Label="Azure Tenant ID (leave empty to use global / multi-tenant)" />
+                <MudTextField T="string" Value="@EditModel.SharedMailBox" ValueChanged="@OnSharedMailBoxChanged"
+                              Label="Shared Mailbox UPN (leave empty to use the authenticated user's mailbox)"
+                              HelperText="Full email address of the mailbox" />
+
+                @if (OAuthTokenIsValid)
+                {
+                    <MudAlert Severity="Severity.Success" Dense="true" Icon="@Icons.Material.Filled.CheckCircle">
+                        Authenticated
+                        @if (!string.IsNullOrEmpty(EditModel.OAuthUserUpn))
+                        {
+                            <span> as <strong>@EditModel.OAuthUserUpn</strong></span>
+                        }
+                        &nbsp;·&nbsp; valid until @EditModel.OAuthTokenExpiry!.Value.ToLocalTime().ToString("HH:mm dd/MM")
+                    </MudAlert>
+                    <MudButton Variant="Variant.Outlined" Color="Color.Warning"
+                               StartIcon="@Icons.Material.Filled.Refresh"
+                               OnClick="SaveAndAuthenticateAsync" Disabled="_saving">
+                        Re-authenticate
+                    </MudButton>
+                }
+                else if (OAuthTokenIsExpired)
+                {
+                    <MudAlert Severity="Severity.Warning" Dense="true" Icon="@Icons.Material.Filled.Warning">
+                        Token expired — please re-authenticate.
+                    </MudAlert>
+                    <MudButton Variant="Variant.Filled" Color="Color.Warning"
+                               StartIcon="@Icons.Material.Filled.Refresh"
+                               OnClick="SaveAndAuthenticateAsync" Disabled="_saving">
+                        @if (_saving) { <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" /> }
+                        Re-authenticate
+                    </MudButton>
+                }
+                else
+                {
+                    <MudAlert Severity="Severity.Warning" Dense="true">
+                        Not authenticated yet. The trigger will be saved as inactive until you sign in.
+                    </MudAlert>
+                    <MudButton Variant="Variant.Filled" Color="Color.Primary"
+                               StartIcon="@Icons.Material.Filled.Login"
+                               OnClick="SaveAndAuthenticateAsync" Disabled="_saving">
+                        @if (_saving) { <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" /> }
+                        Sign in with Microsoft
+                    </MudButton>
+                }
+            }
+
+            @* ── Graph Global credentials ───────────────────────────────── *@
+            @if (EditModel.MailAuthMode == "AppIdGlobal")
+            {
+                <MudAlert Severity="Severity.Info" Dense="true">
+                    Credentials are taken from <strong>Settings → Microsoft Graph</strong>.
+                    Make sure Tenant ID, Client ID and Client Secret are configured there.
+                </MudAlert>
+                <MudTextField T="string" Value="@EditModel.SharedMailBox" ValueChanged="@OnSharedMailBoxChanged"
+                              Label="Mailbox UPN (email address to monitor)"
+                              Required="true"
+                              HelperText="Full email address of the mailbox" />
+            }
+
+            @* ── Graph Per-trigger credentials ─────────────────────────── *@
+            @if (EditModel.MailAuthMode == "AppIdPerTrigger")
+            {
+                <MudTextField @bind-Value="EditModel.AzureTenantId"
+                              Label="Azure Tenant ID" Required="true" />
+                <MudTextField @bind-Value="EditModel.GraphClientId"
+                              Label="Client ID (App ID)" Required="true" />
+                <MudTextField @bind-Value="EditModel.GraphClientSecret"
+                              Label="Client Secret"
+                              Required="true"
+                              InputType="InputType.Password" />
+                <MudTextField T="string" Value="@EditModel.SharedMailBox" ValueChanged="@OnSharedMailBoxChanged"
+                              Label="Mailbox UPN (email address to monitor)"
+                              Required="true"
+                              HelperText="Full email address of the mailbox" />
+            }
+
+            @* ── Common fields ──────────────────────────────────────────── *@
+            @if (EditModel.MailAuthMode == "Interactive")
+            {
+                <MudTextField @bind-Value="EditModel.MailFolder" Label="Mail Folder" Required="true" />
+            }
+            else
+            {
+                <MudTextField @bind-Value="EditModel.MailFolder"
+                              Label="Mail Folder"
+                              ReadOnly="true"
+                              Placeholder="Click the folder icon to browse"
+                              Adornment="Adornment.End"
+                              AdornmentIcon="@Icons.Material.Filled.AccountTree"
+                              AdornmentColor="Color.Primary"
+                              OnAdornmentClick="BrowseFolderAsync"
+                              HelperText='@(string.IsNullOrEmpty(EditModel.MailFolder) ? "Will default to Inbox if not selected" : "")' />
+            }
+            <MudTextField @bind-Value="EditModel.SubjectFilterContains" Label="Subject Filter Contains" />
+            <TagInput @bind-Value="EditModel.From" Label="From Filter" Separator="@(';')" Placeholder="email address, then Enter" HelperText="Semicolon-separated" />
+            <MudTextField @bind-Value="EditModel.To" Label="To Filter" />
+            <MudTextField @bind-Value="EditModel.BodyFilterContains" Label="Body Filter Contains" />
+
+            @if (EditModel.MailAuthMode == "Interactive")
+            {
+                <TagInput @bind-Value="EditModel.AttachmentsType" Label="Attachment Types" Placeholder="e.g. xlsx…" />
+            }
+
+            <MudTextField @bind-Value="EditModel.QueueName" Label="Queue Name" Required="true" />
+            <MudSelect T="string" @bind-Value="EditModel.Priority" Label="Priority">
+                <MudSelectItem Value="@("Low")">Low</MudSelectItem>
+                <MudSelectItem Value="@("Normal")">Normal</MudSelectItem>
+                <MudSelectItem Value="@("High")">High</MudSelectItem>
+            </MudSelect>
+            <MudTextField @bind-Value="EditModel.BusinessDepartmentName" Label="Business Department" Required="@EditModel.Active" />
+            <MudTextField @bind-Value="EditModel.BusinessProcessName" Label="Business Process" Required="@EditModel.Active" />
+            <MudTextField @bind-Value="EditModel.DivisionName" Label="Division (optional)" />
+            <MudTextField @bind-Value="EditModel.CompanyName" Label="Company (required if Division set)" />
+
+            <MudSwitch @bind-Value="EditModel.Active" Label="Active" Color="Color.Success" />
+        </MudForm>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="@(() => MudDialog.Cancel())">Cancel</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="SaveAsync">Save</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public MailTrigger EditModel { get; set; } = new();
+
+    private MudForm _form = default!;
+    private bool _saving;
+
+    private bool OAuthTokenIsValid =>
+        !string.IsNullOrEmpty(EditModel.OAuthAccessToken) &&
+        EditModel.OAuthTokenExpiry.HasValue &&
+        DateTime.UtcNow < EditModel.OAuthTokenExpiry.Value;
+
+    private bool OAuthTokenIsExpired =>
+        !string.IsNullOrEmpty(EditModel.OAuthAccessToken) && !OAuthTokenIsValid;
+
+    private void OnSharedMailBoxChanged(string value)
+    {
+        if (EditModel.SharedMailBox != value)
+        {
+            EditModel.SharedMailBox = value;
+            EditModel.MailFolder = "";
+        }
+        else
+        {
+            EditModel.SharedMailBox = value;
+        }
+    }
+
+    private void OnAuthModeChanged(string value)
+    {
+        if (EditModel.MailAuthMode != value)
+        {
+            EditModel.MailAuthMode = value;
+            EditModel.MailFolder = "";
+        }
+        else
+        {
+            EditModel.MailAuthMode = value;
+        }
+    }
+
+    private async Task SaveAsync()
+    {
+        await _form.Validate();
+        if (!_form.IsValid) return;
+
+        // If trigger is inactive and business fields are missing, ask for confirmation
+        if (!EditModel.Active &&
+            (string.IsNullOrWhiteSpace(EditModel.BusinessDepartmentName) ||
+             string.IsNullOrWhiteSpace(EditModel.BusinessProcessName)))
+        {
+            var confirm = await DialogService.ShowMessageBox(
+                "Missing Business Fields",
+                "Business Department and/or Business Process are missing. Save as inactive anyway?",
+                yesText: "Save",
+                cancelText: "Cancel");
+            if (confirm != true) return;
+        }
+
+        await using var db = await DbFactory.CreateDbContextAsync();
+        if (EditModel.Id == 0)
+            db.MailTriggers.Add(EditModel);
+        else
+            db.MailTriggers.Update(EditModel);
+
+        try
+        {
+            await db.SaveChangesAsync();
+        }
+        catch (DbUpdateException ex) when (ex.InnerException?.Message.Contains("UNIQUE constraint failed") == true)
+        {
+            Snackbar.Add($"A trigger named \"{EditModel.TriggerName}\" already exists.", Severity.Error);
+            return;
+        }
+
+        MudDialog.Close(EditModel);
+    }
+
+    private async Task BrowseFolderAsync()
+    {
+        string? accessToken = null;
+        string? mailboxUpn = null;
+
+        try
+        {
+            var settings = await SettingsService.GetAsync();
+
+            switch (EditModel.MailAuthMode)
+            {
+                case "OAuth2Interactive":
+                    // Try per-trigger token first, fall back to global token
+                    var perTriggerValid = !string.IsNullOrEmpty(EditModel.OAuthAccessToken) &&
+                                         EditModel.OAuthTokenExpiry.HasValue &&
+                                         DateTime.UtcNow < EditModel.OAuthTokenExpiry.Value;
+                    if (perTriggerValid)
+                    {
+                        accessToken = EditModel.OAuthAccessToken;
+                        mailboxUpn = EditModel.SharedMailBox ?? EditModel.OAuthUserUpn ?? "";
+                    }
+                    else
+                    {
+                        accessToken = await OAuthService.GetValidGlobalAccessTokenAsync();
+                        if (accessToken == null)
+                        {
+                            Snackbar.Add("Authenticate with Microsoft first (per-trigger or via Settings → Sign in with Microsoft).", Severity.Warning);
+                            return;
+                        }
+                        mailboxUpn = EditModel.SharedMailBox ?? settings.OAuthGlobalUserUpn ?? "";
+                    }
+                    break;
+
+                case "AppIdGlobal":
+                    if (string.IsNullOrWhiteSpace(settings.GraphClientId))
+                    {
+                        Snackbar.Add("Global Graph credentials not configured in Settings.", Severity.Warning);
+                        return;
+                    }
+                    accessToken = await GraphMailService.GetAccessTokenAsync(
+                        settings.GraphTenantId, settings.GraphClientId, settings.GraphClientSecret);
+                    mailboxUpn = EditModel.SharedMailBox;
+                    break;
+
+                case "AppIdPerTrigger":
+                    if (string.IsNullOrWhiteSpace(EditModel.GraphClientId))
+                    {
+                        Snackbar.Add("Per-trigger Graph credentials not configured.", Severity.Warning);
+                        return;
+                    }
+                    accessToken = await GraphMailService.GetAccessTokenAsync(
+                        EditModel.AzureTenantId, EditModel.GraphClientId, EditModel.GraphClientSecret);
+                    mailboxUpn = EditModel.SharedMailBox;
+                    break;
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Could not connect: {ex.Message}", Severity.Error);
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(mailboxUpn) && EditModel.MailAuthMode != "OAuth2Interactive")
+        {
+            Snackbar.Add("Enter the mailbox email address first.", Severity.Warning);
+            return;
+        }
+
+        var parameters = new DialogParameters<MailFolderPickerDialog>
+        {
+            { x => x.AccessToken, accessToken! },
+            { x => x.MailboxUpn, mailboxUpn ?? "" }
+        };
+
+        var dialog = await DialogService.ShowAsync<MailFolderPickerDialog>(
+            "Select Mail Folder", parameters,
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = false, CloseOnEscapeKey = true });
+
+        var result = await dialog.Result;
+        if (!result.Canceled && result.Data is string folderName && !string.IsNullOrEmpty(folderName))
+            EditModel.MailFolder = folderName;
+    }
+
+    private async Task SaveAndAuthenticateAsync()
+    {
+        if (string.IsNullOrWhiteSpace(EditModel.TriggerName))
+        {
+            Snackbar.Add("Trigger Name is required.", Severity.Warning);
+            return;
+        }
+
+        _saving = true;
+        StateHasChanged();
+
+        try
+        {
+            // Save as inactive — user must complete setup and activate manually after auth
+            EditModel.Active = false;
+
+            // Persist trigger first so it has an ID for the OAuth state param
+            await using var db = await DbFactory.CreateDbContextAsync();
+            if (EditModel.Id == 0)
+                db.MailTriggers.Add(EditModel);
+            else
+                db.MailTriggers.Update(EditModel);
+            await db.SaveChangesAsync();
+
+            // Use PublicBaseUrl from settings when available (required for Azure AD redirect URI to match)
+            var settings = await SettingsService.GetAsync();
+            var baseUri = !string.IsNullOrWhiteSpace(settings.PublicBaseUrl)
+                ? settings.PublicBaseUrl.TrimEnd('/')
+                : Nav.BaseUri.TrimEnd('/');
+            var redirectUri = $"{baseUri}/account/mail-oauth-callback";
+
+            var authUrl = await OAuthService.BuildAuthUrlAsync(EditModel.Id, redirectUri);
+
+            // Navigate with forceLoad — the browser redirect will close the dialog naturally
+            Nav.NavigateTo(authUrl, forceLoad: true);
+        }
+        catch (DbUpdateException ex) when (ex.InnerException?.Message.Contains("UNIQUE constraint failed") == true)
+        {
+            Snackbar.Add($"A trigger named \"{EditModel.TriggerName}\" already exists.", Severity.Error);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+        finally
+        {
+            _saving = false;
+            StateHasChanged();
+        }
+    }
+}

@@ -1,0 +1,324 @@
+@page "/mail-triggers"
+@attribute [Authorize]
+@using SuperTrigger.Web.Components.Dialogs
+@using Microsoft.AspNetCore.WebUtilities
+@inject IDbContextFactory<AppDbContext> DbFactory
+@inject TriggerReloadChannel ReloadChannel
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+@inject NavigationManager Nav
+
+<PageTitle>Mail Triggers - SuperTrigger</PageTitle>
+
+<div class="d-flex align-center justify-space-between mb-3 flex-wrap gap-2">
+    <MudText Typo="Typo.h5">Mail Triggers</MudText>
+    <div class="d-flex gap-2 flex-wrap">
+        @if (_selected.Count > 0)
+        {
+            <AuthorizeView Roles="Admin,Operator">
+                <Authorized Context="bulkCtx">
+                    @if (_selected.Any(t => !t.Active))
+                    {
+                        <MudButton Size="Size.Small" Variant="Variant.Outlined" Color="Color.Success"
+                                   StartIcon="@Icons.Material.Filled.CheckCircle"
+                                   OnClick="ActivateSelectedAsync">Activate (@_selected.Count(t => !t.Active))</MudButton>
+                    }
+                    @if (_selected.Any(t => t.Active))
+                    {
+                        <MudButton Size="Size.Small" Variant="Variant.Outlined" Color="Color.Warning"
+                                   StartIcon="@Icons.Material.Filled.Cancel"
+                                   OnClick="DeactivateSelectedAsync">Deactivate (@_selected.Count(t => t.Active))</MudButton>
+                    }
+                    <MudButton Size="Size.Small" Variant="Variant.Outlined" Color="Color.Error"
+                               StartIcon="@Icons.Material.Filled.Delete"
+                               OnClick="DeleteSelectedAsync">Delete (@_selected.Count)</MudButton>
+                </Authorized>
+            </AuthorizeView>
+        }
+        <AuthorizeView Roles="Admin,Operator">
+            <Authorized Context="addCtx">
+                <MudButton Variant="Variant.Filled" Color="Color.Primary"
+                           StartIcon="@Icons.Material.Filled.Add" OnClick="OpenAddDialog">Add Trigger</MudButton>
+            </Authorized>
+        </AuthorizeView>
+    </div>
+</div>
+
+<MudPaper Class="pa-3 mb-3" Elevation="1">
+    <MudGrid Spacing="2">
+        <MudItem xs="12" sm="6" md="2">
+            <MudTextField @bind-Value="_filterName" Label="Trigger Name" Immediate="true"
+                          DebounceInterval="300" OnDebounceIntervalElapsed="FilterChangedAsync"
+                          Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search"
+                          Clearable="true" Margin="Margin.Dense" />
+        </MudItem>
+        <MudItem xs="12" sm="6" md="2">
+            <MudTextField @bind-Value="_filterMailbox" Label="User / Mailbox" Immediate="true"
+                          DebounceInterval="300" OnDebounceIntervalElapsed="FilterChangedAsync"
+                          Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Email"
+                          Clearable="true" Margin="Margin.Dense" />
+        </MudItem>
+        <MudItem xs="12" sm="6" md="2">
+            <MudTextField @bind-Value="_filterSubject" Label="Subject Filter" Immediate="true"
+                          DebounceInterval="300" OnDebounceIntervalElapsed="FilterChangedAsync"
+                          Clearable="true" Margin="Margin.Dense" />
+        </MudItem>
+        <MudItem xs="12" sm="6" md="2">
+            <MudTextField @bind-Value="_filterDept" Label="Department" Immediate="true"
+                          DebounceInterval="300" OnDebounceIntervalElapsed="FilterChangedAsync"
+                          Clearable="true" Margin="Margin.Dense" />
+        </MudItem>
+        <MudItem xs="12" sm="6" md="2">
+            <MudTextField @bind-Value="_filterProcess" Label="Process" Immediate="true"
+                          DebounceInterval="300" OnDebounceIntervalElapsed="FilterChangedAsync"
+                          Clearable="true" Margin="Margin.Dense" />
+        </MudItem>
+        <MudItem xs="12" sm="6" md="2">
+            <MudSelect T="string" Label="Status" Value="_filterActive" Margin="Margin.Dense"
+                       ValueChanged="@(v => { _filterActive = v; ApplyFilters(); })">
+                <MudSelectItem Value="@("")">All</MudSelectItem>
+                <MudSelectItem Value="@("active")">Active</MudSelectItem>
+                <MudSelectItem Value="@("inactive")">Inactive</MudSelectItem>
+            </MudSelect>
+        </MudItem>
+    </MudGrid>
+    @if (_triggers.Count != _filtered.Count)
+    {
+        <MudText Typo="Typo.caption" Class="mt-1" Style="color:var(--mud-palette-text-secondary)">
+            Showing @_filtered.Count of @_triggers.Count triggers
+        </MudText>
+    }
+</MudPaper>
+
+<MudTable Items="_filtered" Dense="true" Hover="true" Striped="true" Loading="_loading"
+          MultiSelection="true" @bind-SelectedItems="_selected">
+    <HeaderContent>
+        <MudTh>Active</MudTh>
+        <MudTh>Name</MudTh>
+        <MudTh>User / Mailbox</MudTh>
+        <MudTh>Folder</MudTh>
+        <MudTh>Subject Filter</MudTh>
+        <MudTh>Queue</MudTh>
+        <MudTh>Priority</MudTh>
+        <MudTh>Department</MudTh>
+        <MudTh>Process</MudTh>
+        <AuthorizeView Roles="Admin,Operator">
+            <MudTh>Actions</MudTh>
+        </AuthorizeView>
+    </HeaderContent>
+    <RowTemplate>
+        <MudTd>
+            <div @onclick:stopPropagation="true">
+                <AuthorizeView Roles="Admin,Operator">
+                    <Authorized Context="authCtx">
+                        <MudSwitch T="bool" Value="context.Active" Color="Color.Success"
+                                   ValueChanged="@(v => ToggleActiveAsync(context, v))" />
+                    </Authorized>
+                    <NotAuthorized Context="authCtx">
+                        <MudIcon Icon="@(context.Active ? Icons.Material.Filled.CheckCircle : Icons.Material.Filled.Cancel)"
+                                 Color="@(context.Active ? Color.Success : Color.Default)" />
+                    </NotAuthorized>
+                </AuthorizeView>
+            </div>
+        </MudTd>
+        <MudTd>@context.TriggerName</MudTd>
+        <MudTd>@(string.IsNullOrEmpty(context.SharedMailBox) ? context.UserName : context.SharedMailBox)</MudTd>
+        <MudTd>@context.MailFolder</MudTd>
+        <MudTd>@context.SubjectFilterContains</MudTd>
+        <MudTd>@context.QueueName</MudTd>
+        <MudTd>@context.Priority</MudTd>
+        <MudTd>@context.BusinessDepartmentName</MudTd>
+        <MudTd>@context.BusinessProcessName</MudTd>
+        <AuthorizeView Roles="Admin,Operator">
+            <Authorized Context="authCtx">
+                <MudTd>
+                    <div @onclick:stopPropagation="true">
+                        <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small"
+                                       OnClick="@(() => OpenEditDialog(context))" />
+                        <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error"
+                                       OnClick="@(() => DeleteAsync(context))" />
+                    </div>
+                </MudTd>
+            </Authorized>
+        </AuthorizeView>
+    </RowTemplate>
+</MudTable>
+
+@code {
+    private List<MailTrigger> _triggers = [];
+    private List<MailTrigger> _filtered = [];
+    private HashSet<MailTrigger> _selected = [];
+    private bool _loading = true;
+    private bool _autoOpenDone;
+    private string _filterName = "";
+    private string _filterMailbox = "";
+    private string _filterSubject = "";
+    private string _filterDept = "";
+    private string _filterProcess = "";
+    private string _filterActive = "";
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender || _autoOpenDone) return;
+
+        var uri = new Uri(Nav.Uri);
+        var query = QueryHelpers.ParseQuery(uri.Query);
+        if (query.TryGetValue("edit_trigger_id", out var idStr) &&
+            int.TryParse(idStr, out var triggerId) && triggerId > 0)
+        {
+            _autoOpenDone = true;
+            await using var db = await DbFactory.CreateDbContextAsync();
+            var trigger = await db.MailTriggers.FindAsync(triggerId);
+            if (trigger != null)
+                await InvokeAsync(() => OpenEditDialog(trigger));
+        }
+
+        if (query.TryGetValue("auth_error", out var err))
+            Snackbar.Add($"Authentication failed: {err}", Severity.Error);
+    }
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        await using var db = await DbFactory.CreateDbContextAsync();
+        _triggers = await db.MailTriggers.OrderBy(t => t.TriggerName).ToListAsync();
+        ApplyFilters();
+        _loading = false;
+    }
+
+    private Task FilterChangedAsync() { ApplyFilters(); return Task.CompletedTask; }
+
+    private void ApplyFilters()
+    {
+        var mailboxStr = _filterMailbox;
+        _filtered = _triggers.Where(t =>
+            (string.IsNullOrEmpty(_filterName) || t.TriggerName.Contains(_filterName, StringComparison.OrdinalIgnoreCase)) &&
+            (string.IsNullOrEmpty(mailboxStr) ||
+                (t.SharedMailBox ?? "").Contains(mailboxStr, StringComparison.OrdinalIgnoreCase) ||
+                (t.UserName ?? "").Contains(mailboxStr, StringComparison.OrdinalIgnoreCase)) &&
+            (string.IsNullOrEmpty(_filterSubject) || (t.SubjectFilterContains ?? "").Contains(_filterSubject, StringComparison.OrdinalIgnoreCase)) &&
+            (string.IsNullOrEmpty(_filterDept) || t.BusinessDepartmentName.Contains(_filterDept, StringComparison.OrdinalIgnoreCase)) &&
+            (string.IsNullOrEmpty(_filterProcess) || t.BusinessProcessName.Contains(_filterProcess, StringComparison.OrdinalIgnoreCase)) &&
+            (_filterActive == "" || (_filterActive == "active" && t.Active) || (_filterActive == "inactive" && !t.Active))
+        ).ToList();
+        _selected = [];
+    }
+
+    private async Task ActivateSelectedAsync()
+    {
+        var ids = _selected.Select(t => t.Id).ToList();
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var items = await db.MailTriggers.Where(t => ids.Contains(t.Id)).ToListAsync();
+        items.ForEach(t => t.Active = true);
+        await db.SaveChangesAsync();
+        ReloadChannel.RequestReload();
+        Snackbar.Add($"Activated {items.Count} trigger(s)", Severity.Success);
+        await LoadAsync();
+    }
+
+    private async Task DeactivateSelectedAsync()
+    {
+        var ids = _selected.Select(t => t.Id).ToList();
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var items = await db.MailTriggers.Where(t => ids.Contains(t.Id)).ToListAsync();
+        items.ForEach(t => t.Active = false);
+        await db.SaveChangesAsync();
+        ReloadChannel.RequestReload();
+        Snackbar.Add($"Deactivated {items.Count} trigger(s)", Severity.Info);
+        await LoadAsync();
+    }
+
+    private async Task DeleteSelectedAsync()
+    {
+        var count = _selected.Count;
+        var result = await DialogService.ShowMessageBox("Confirm Delete",
+            $"Delete {count} selected trigger(s)?", "Delete", cancelText: "Cancel");
+        if (result != true) return;
+
+        var ids = _selected.Select(t => t.Id).ToList();
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var items = await db.MailTriggers.Where(t => ids.Contains(t.Id)).ToListAsync();
+        db.MailTriggers.RemoveRange(items);
+        await db.SaveChangesAsync();
+        ReloadChannel.RequestReload();
+        Snackbar.Add($"Deleted {items.Count} trigger(s)", Severity.Info);
+        await LoadAsync();
+    }
+
+    private async Task OpenAddDialog()
+    {
+        var model = new MailTrigger { Priority = "Normal", Active = true, MailFolder = "Inbox", AttachmentsType = "" };
+        var parameters = new DialogParameters<MailTriggerDialog> { { x => x.EditModel, model } };
+        var options = new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true };
+        var dialog = await DialogService.ShowAsync<MailTriggerDialog>("Add Mail Trigger", parameters, options);
+        if ((await dialog.Result) is { Canceled: false })
+        {
+            ReloadChannel.RequestReload();
+            Snackbar.Add("Trigger added", Severity.Success);
+            await LoadAsync();
+        }
+    }
+
+    private async Task OpenEditDialog(MailTrigger trigger)
+    {
+        var model = new MailTrigger
+        {
+            Id = trigger.Id, Active = trigger.Active, TriggerName = trigger.TriggerName,
+            MailAuthMode = trigger.MailAuthMode, UserName = trigger.UserName, Password = trigger.Password,
+            UserDomain = trigger.UserDomain, AzureTenantId = trigger.AzureTenantId,
+            GraphClientId = trigger.GraphClientId, GraphClientSecret = trigger.GraphClientSecret,
+            OAuthAccessToken = trigger.OAuthAccessToken, OAuthRefreshToken = trigger.OAuthRefreshToken,
+            OAuthTokenExpiry = trigger.OAuthTokenExpiry, OAuthUserUpn = trigger.OAuthUserUpn,
+            CustomMailServer = trigger.CustomMailServer, CustomMailServerVersion = trigger.CustomMailServerVersion,
+            MailFolder = trigger.MailFolder, SharedMailBox = trigger.SharedMailBox,
+            SubjectFilterContains = trigger.SubjectFilterContains, From = trigger.From,
+            To = trigger.To, BodyFilterContains = trigger.BodyFilterContains,
+            AttachmentsType = trigger.AttachmentsType, Priority = trigger.Priority,
+            QueueName = trigger.QueueName, BusinessDepartmentName = trigger.BusinessDepartmentName,
+            BusinessProcessName = trigger.BusinessProcessName, DivisionName = trigger.DivisionName,
+            CompanyName = trigger.CompanyName, GraphSubscriptionId = trigger.GraphSubscriptionId,
+            GraphSubscriptionExpiry = trigger.GraphSubscriptionExpiry
+        };
+        var parameters = new DialogParameters<MailTriggerDialog> { { x => x.EditModel, model } };
+        var options = new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true };
+        var dialog = await DialogService.ShowAsync<MailTriggerDialog>("Edit Mail Trigger", parameters, options);
+        if ((await dialog.Result) is { Canceled: false })
+        {
+            ReloadChannel.RequestReload();
+            Snackbar.Add("Trigger saved", Severity.Success);
+            await LoadAsync();
+        }
+    }
+
+    private async Task ToggleActiveAsync(MailTrigger trigger, bool value)
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var t = await db.MailTriggers.FindAsync(trigger.Id);
+        if (t == null) return;
+        t.Active = value;
+        await db.SaveChangesAsync();
+        trigger.Active = value;
+        if (!string.IsNullOrEmpty(_filterActive)) ApplyFilters();
+        ReloadChannel.RequestReload();
+    }
+
+    private async Task DeleteAsync(MailTrigger trigger)
+    {
+        var result = await DialogService.ShowMessageBox("Confirm Delete",
+            $"Delete trigger '{trigger.TriggerName}'?", "Delete", cancelText: "Cancel");
+        if (result != true) return;
+
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var t = await db.MailTriggers.FindAsync(trigger.Id);
+        if (t != null)
+        {
+            db.MailTriggers.Remove(t);
+            await db.SaveChangesAsync();
+            ReloadChannel.RequestReload();
+            Snackbar.Add("Deleted", Severity.Info);
+            await LoadAsync();
+        }
+    }
+}

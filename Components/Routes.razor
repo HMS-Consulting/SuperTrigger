@@ -1,0 +1,16 @@
+<Router AppAssembly="typeof(App).Assembly">
+    <Found Context="routeData">
+        <AuthorizeRouteView RouteData="routeData" DefaultLayout="typeof(Components.Shared.MainLayout)">
+            <NotAuthorized>
+                <RedirectToLogin />
+            </NotAuthorized>
+        </AuthorizeRouteView>
+        <FocusOnNavigate RouteData="routeData" Selector="h1" />
+    </Found>
+    <NotFound>
+        <PageTitle>Not Found</PageTitle>
+        <LayoutView Layout="typeof(Components.Shared.MainLayout)">
+            <MudText Typo="Typo.h5" Class="pa-4">Page not found.</MudText>
+        </LayoutView>
+    </NotFound>
+</Router>

@@ -1,0 +1,108 @@
+@using MudBlazor
+@using SuperTrigger.Web.Services.Graph
+@inject GraphMailService GraphService
+@inject ISnackbar Snackbar
+
+<MudDialog Style="min-width:380px">
+    <TitleContent>
+        <MudText Typo="Typo.h6">
+            <MudIcon Icon="@Icons.Material.Filled.FolderOpen" Class="mr-2" Style="vertical-align:middle" />
+            Select Mail Folder
+        </MudText>
+    </TitleContent>
+    <DialogContent>
+        @if (_loading)
+        {
+            <div class="d-flex justify-center pa-8">
+                <MudProgressCircular Indeterminate="true" />
+            </div>
+        }
+        else if (_error != null)
+        {
+            <MudAlert Severity="Severity.Error" Dense="true">@_error</MudAlert>
+        }
+        else
+        {
+            <MudTreeView T="MailFolderNode" Dense="true" Hover="true" Style="overflow-y:auto;max-height:55vh">
+                @foreach (var node in _roots)
+                {
+                    <MailFolderTreeItem Node="@node"
+                                        SelectedName="@_selectedName"
+                                        OnSelect="@(name => { _selectedName = name; StateHasChanged(); })"
+                                        OnExpand="@LoadChildrenAsync" />
+                }
+            </MudTreeView>
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="@(() => MudDialog.Cancel())">Cancel</MudButton>
+        <MudButton Color="Color.Primary"
+                   Variant="Variant.Filled"
+                   Disabled="@string.IsNullOrEmpty(_selectedName)"
+                   OnClick="@(() => MudDialog.Close(_selectedName))">
+            Select
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public string AccessToken { get; set; } = "";
+    [Parameter] public string MailboxUpn { get; set; } = "";
+
+    private List<MailFolderNode> _roots = [];
+    private string? _selectedName;
+    private bool _loading = true;
+    private string? _error;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            var folders = await GraphService.GetMailFoldersAsync(AccessToken, MailboxUpn);
+            _roots = folders.Select(f => new MailFolderNode
+            {
+                Id = f.Id,
+                DisplayName = f.DisplayName,
+                HasChildren = f.ChildFolderCount > 0,
+                Path = f.DisplayName
+            }).ToList();
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to load folders: {ex.Message}";
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task LoadChildrenAsync(MailFolderNode node)
+    {
+        node.IsLoading = true;
+        StateHasChanged();
+        try
+        {
+            var children = await GraphService.GetMailFoldersAsync(AccessToken, MailboxUpn, node.Id);
+            node.Children = children.Select(f => new MailFolderNode
+            {
+                Id = f.Id,
+                DisplayName = f.DisplayName,
+                HasChildren = f.ChildFolderCount > 0,
+                Path = node.Path + "/" + f.DisplayName
+            }).ToList();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Failed to load subfolders: {ex.Message}", Severity.Error);
+            node.HasChildren = false;
+            node.Children = [];
+        }
+        finally
+        {
+            node.IsLoading = false;
+            StateHasChanged();
+        }
+    }
+}

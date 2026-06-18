@@ -1,0 +1,107 @@
+@using MudBlazor
+
+<div class="tag-input-container mud-input-outlined d-flex flex-wrap align-center gap-1 pa-2"
+     style="border:1px solid rgba(0,0,0,0.23);border-radius:4px;cursor:text;min-height:56px"
+     @onclick="FocusInputAsync">
+
+    @if (!string.IsNullOrEmpty(Label))
+    {
+        <label style="position:absolute;font-size:0.75rem;color:rgba(0,0,0,0.6);margin-top:-22px">@Label</label>
+    }
+
+    @foreach (var tag in _tags)
+    {
+        var t = tag;
+        <MudChip T="string" Size="Size.Small" Color="Color.Primary"
+                 OnClose="@(() => RemoveTag(t))">@t</MudChip>
+    }
+
+    <input @ref="_input"
+           value="@_text"
+           placeholder="@(_tags.Count == 0 ? Placeholder : "")"
+           style="border:none;outline:none;flex:1;min-width:80px;font-size:1rem;background:transparent"
+           @oninput="OnInput"
+           @onkeydown="OnKeyDown" />
+</div>
+
+@if (!string.IsNullOrEmpty(HelperText))
+{
+    <MudText Typo="Typo.caption" Class="ml-2" Style="color:rgba(0,0,0,0.6)">@HelperText</MudText>
+}
+
+@code {
+    [Parameter] public string Value { get; set; } = "";
+    [Parameter] public EventCallback<string> ValueChanged { get; set; }
+    [Parameter] public char Separator { get; set; } = ',';
+    [Parameter] public string Label { get; set; } = "";
+    [Parameter] public string? HelperText { get; set; }
+    [Parameter] public string Placeholder { get; set; } = "Type and press Enter…";
+
+    private List<string> _tags = [];
+    private string _text = "";
+    private string _lastValue = "";
+    private ElementReference _input;
+
+    protected override void OnParametersSet()
+    {
+        // Only re-parse when Value changed from outside (not from our own Notify)
+        if (Value != _lastValue)
+        {
+            _lastValue = Value;
+            _tags = (Value ?? "")
+                .Split(Separator)
+                .Select(t => t.Trim().Replace(" ", ""))
+                .Where(t => !string.IsNullOrEmpty(t))
+                .Distinct()
+                .ToList();
+        }
+    }
+
+    private void OnInput(ChangeEventArgs e)
+    {
+        _text = ((string?)e.Value ?? "").Replace(" ", "");
+    }
+
+    private async Task OnKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter" || e.Key == "Tab")
+        {
+            CommitText();
+            await Task.CompletedTask;
+        }
+        else if (e.Key == "Backspace" && string.IsNullOrEmpty(_text) && _tags.Count > 0)
+        {
+            _tags.RemoveAt(_tags.Count - 1);
+            Notify();
+        }
+    }
+
+    private void CommitText()
+    {
+        var trimmed = _text.Trim().Replace(" ", "");
+        if (!string.IsNullOrEmpty(trimmed) && !_tags.Contains(trimmed))
+        {
+            _tags.Add(trimmed);
+            Notify();
+        }
+        _text = "";
+    }
+
+    private void RemoveTag(string tag)
+    {
+        _tags.Remove(tag);
+        Notify();
+    }
+
+    private void Notify()
+    {
+        var joined = string.Join(Separator, _tags);
+        _lastValue = joined;
+        ValueChanged.InvokeAsync(joined);
+    }
+
+    private async Task FocusInputAsync()
+    {
+        await _input.FocusAsync();
+    }
+}

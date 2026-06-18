@@ -1,0 +1,25 @@
+<MudNavMenu>
+    <MudNavLink Href="/" Match="NavLinkMatch.All" Icon="@Icons.Material.Filled.Dashboard">
+        Dashboard
+    </MudNavLink>
+    <MudNavLink Href="/file-triggers" Icon="@Icons.Material.Filled.Folder">
+        File Triggers
+    </MudNavLink>
+    <MudNavLink Href="/mail-triggers" Icon="@Icons.Material.Filled.Email">
+        Mail Triggers
+    </MudNavLink>
+    <MudDivider Class="my-2" />
+    <AuthorizeView Roles="Admin,Operator">
+        <Authorized>
+            <MudNavLink Href="/settings" Icon="@Icons.Material.Filled.Settings">
+                Settings
+            </MudNavLink>
+            <MudNavLink Href="/users" Icon="@Icons.Material.Filled.People">
+                Users & Access
+            </MudNavLink>
+        </Authorized>
+    </AuthorizeView>
+    <MudNavLink Href="/logs" Icon="@Icons.Material.Filled.List">
+        Logs
+    </MudNavLink>
+</MudNavMenu>

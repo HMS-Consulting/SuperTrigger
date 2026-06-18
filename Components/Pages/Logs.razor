@@ -1,0 +1,153 @@
+@page "/logs"
+@attribute [Authorize]
+@inject IDbContextFactory<AppDbContext> DbFactory
+
+<PageTitle>Logs - SuperTrigger</PageTitle>
+
+<div class="d-flex align-center justify-space-between mb-4">
+    <MudText Typo="Typo.h5">Queue Item Logs</MudText>
+    <div class="d-flex gap-2">
+        <MudButton Size="Size.Small" Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.FilterAltOff"
+                   OnClick="ClearFilters">Clear Filters</MudButton>
+        <MudTooltip Text="Refresh">
+            <MudIconButton Icon="@Icons.Material.Filled.Refresh" Color="Color.Primary" OnClick="LoadAsync" />
+        </MudTooltip>
+    </div>
+</div>
+
+<MudPaper Class="pa-3 mb-4">
+    <MudGrid Spacing="2">
+        <MudItem xs="12" sm="6" md="2">
+            <MudDatePicker Label="From Date" Date="_fromDate" Margin="Margin.Dense"
+                           DateChanged="@(d => { _fromDate = d; _ = LoadAsync(); })" />
+        </MudItem>
+        <MudItem xs="12" sm="6" md="2">
+            <MudDatePicker Label="To Date" Date="_toDate" Margin="Margin.Dense"
+                           DateChanged="@(d => { _toDate = d; _ = LoadAsync(); })" />
+        </MudItem>
+        <MudItem xs="12" sm="4" md="2">
+            <MudSelect T="string" Label="Type" Value="_typeFilter" Margin="Margin.Dense"
+                       ValueChanged="@(v => { _typeFilter = v; _ = LoadAsync(); })">
+                <MudSelectItem Value="@("")">All</MudSelectItem>
+                <MudSelectItem Value="@("File")">File</MudSelectItem>
+                <MudSelectItem Value="@("Mail")">Mail</MudSelectItem>
+            </MudSelect>
+        </MudItem>
+        <MudItem xs="12" sm="4" md="2">
+            <MudSelect T="string" Label="Status" Value="_statusFilter" Margin="Margin.Dense"
+                       ValueChanged="@(v => { _statusFilter = v; _ = LoadAsync(); })">
+                <MudSelectItem Value="@("")">All</MudSelectItem>
+                <MudSelectItem Value="@("success")">Success</MudSelectItem>
+                <MudSelectItem Value="@("error")">Error</MudSelectItem>
+            </MudSelect>
+        </MudItem>
+        <MudItem xs="12" sm="4" md="2">
+            <MudTextField @bind-Value="_triggerFilter" Label="Trigger Name" Immediate="true"
+                          DebounceInterval="400" OnDebounceIntervalElapsed="LoadAsync"
+                          Clearable="true" Margin="Margin.Dense" />
+        </MudItem>
+        <MudItem xs="12" sm="4" md="2">
+            <MudTextField @bind-Value="_queueFilter" Label="Queue Name" Immediate="true"
+                          DebounceInterval="400" OnDebounceIntervalElapsed="LoadAsync"
+                          Clearable="true" Margin="Margin.Dense" />
+        </MudItem>
+    </MudGrid>
+    @if (!_loading)
+    {
+        <MudText Typo="Typo.caption" Class="mt-1" Style="color:var(--mud-palette-text-secondary)">
+            @_logs.Count result(s)@(_logs.Count >= 500 ? " (capped at 500 — narrow your filters to see more)" : "")
+        </MudText>
+    }
+</MudPaper>
+
+<MudTable Items="_logs" Dense="true" Hover="true" Striped="true" Loading="_loading">
+    <HeaderContent>
+        <MudTh>Time</MudTh>
+        <MudTh>Trigger</MudTh>
+        <MudTh>Type</MudTh>
+        <MudTh>Queue</MudTh>
+        <MudTh>Reference</MudTh>
+        <MudTh>Status</MudTh>
+        <MudTh>Error</MudTh>
+    </HeaderContent>
+    <RowTemplate>
+        <MudTd>@context.CreatedAt.ToString("dd/MM/yyyy HH:mm:ss")</MudTd>
+        <MudTd>@context.TriggerName</MudTd>
+        <MudTd>@context.TriggerType</MudTd>
+        <MudTd>@context.QueueName</MudTd>
+        <MudTd>
+            <MudTooltip Text="@context.Reference">
+                <MudText Style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block;">
+                    @context.Reference
+                </MudText>
+            </MudTooltip>
+        </MudTd>
+        <MudTd>
+            @if (context.Success)
+            {
+                <MudChip T="string" Color="Color.Success" Size="Size.Small">OK</MudChip>
+            }
+            else
+            {
+                <MudChip T="string" Color="Color.Error" Size="Size.Small">FAIL</MudChip>
+            }
+        </MudTd>
+        <MudTd>
+            <MudTooltip Text="@context.ErrorMessage">
+                <MudText Style="max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block;">
+                    @context.ErrorMessage
+                </MudText>
+            </MudTooltip>
+        </MudTd>
+    </RowTemplate>
+    <PagerContent>
+        <MudTablePager PageSizeOptions="new int[]{ 25, 50, 100 }" />
+    </PagerContent>
+</MudTable>
+
+@code {
+    private List<QueueItemLog> _logs = [];
+    private bool _loading;
+    private DateTime? _fromDate = DateTime.Today.AddDays(-7);
+    private DateTime? _toDate = DateTime.Today.AddDays(1);
+    private string _typeFilter = "";
+    private string _statusFilter = "";
+    private string _triggerFilter = "";
+    private string _queueFilter = "";
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        StateHasChanged();
+
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var query = db.QueueItemLogs.AsQueryable();
+
+        if (_fromDate.HasValue) query = query.Where(l => l.CreatedAt >= _fromDate.Value);
+        if (_toDate.HasValue) query = query.Where(l => l.CreatedAt < _toDate.Value);
+        if (_typeFilter == "File") query = query.Where(l => l.TriggerType == TriggerType.File);
+        if (_typeFilter == "Mail") query = query.Where(l => l.TriggerType == TriggerType.Mail);
+        if (_statusFilter == "success") query = query.Where(l => l.Success);
+        if (_statusFilter == "error") query = query.Where(l => !l.Success);
+        if (!string.IsNullOrWhiteSpace(_triggerFilter))
+            query = query.Where(l => l.TriggerName.Contains(_triggerFilter));
+        if (!string.IsNullOrWhiteSpace(_queueFilter))
+            query = query.Where(l => l.QueueName.Contains(_queueFilter));
+
+        _logs = await query.OrderByDescending(l => l.CreatedAt).Take(500).ToListAsync();
+        _loading = false;
+    }
+
+    private async Task ClearFilters()
+    {
+        _fromDate = DateTime.Today.AddDays(-7);
+        _toDate = DateTime.Today.AddDays(1);
+        _typeFilter = "";
+        _statusFilter = "";
+        _triggerFilter = "";
+        _queueFilter = "";
+        await LoadAsync();
+    }
+}

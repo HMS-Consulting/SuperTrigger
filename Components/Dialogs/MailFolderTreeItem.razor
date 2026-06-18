@@ -1,0 +1,42 @@
+@using MudBlazor
+
+<MudTreeViewItem T="MailFolderNode"
+                 Value="@Node"
+                 Text="@Node.DisplayName"
+                 Icon="@(Node.IsExpanded ? Icons.Material.Filled.FolderOpen : Icons.Material.Filled.Folder)"
+                 IconColor="@(Node.Path == SelectedName ? Color.Primary : Color.Default)"
+                 CanExpand="@(Node.Children == null ? Node.HasChildren : Node.Children.Count > 0)"
+                 Loading="@Node.IsLoading"
+                 Expanded="@Node.IsExpanded"
+                 ExpandedChanged="@HandleExpandedChangedAsync"
+                 OnClick="@HandleClick">
+    @if (Node.Children is { Count: > 0 })
+    {
+        @foreach (var child in Node.Children)
+        {
+            <MailFolderTreeItem Node="@child"
+                                SelectedName="@SelectedName"
+                                OnSelect="@OnSelect"
+                                OnExpand="@OnExpand" />
+        }
+    }
+</MudTreeViewItem>
+
+@code {
+    [Parameter, EditorRequired] public MailFolderNode Node { get; set; } = default!;
+    [Parameter] public string? SelectedName { get; set; }
+    [Parameter] public EventCallback<string> OnSelect { get; set; }
+    [Parameter] public EventCallback<MailFolderNode> OnExpand { get; set; }
+
+    private async Task HandleExpandedChangedAsync(bool expanded)
+    {
+        Node.IsExpanded = expanded;
+        if (expanded && Node.Children == null && Node.HasChildren && !Node.IsLoading)
+        {
+            await OnExpand.InvokeAsync(Node);
+            StateHasChanged();
+        }
+    }
+
+    private Task HandleClick() => OnSelect.InvokeAsync(Node.Path);
+}

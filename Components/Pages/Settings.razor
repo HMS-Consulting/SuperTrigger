@@ -1,0 +1,321 @@
+@page "/settings"
+@attribute [Authorize(Roles = "Admin,Operator")]
+@using SuperTrigger.Web.Services.Auth
+@using Microsoft.AspNetCore.WebUtilities
+@using Newtonsoft.Json.Linq
+@inject AppSettingsService SettingsService
+@inject ISnackbar Snackbar
+@inject MailOAuthService OAuthService
+@inject NavigationManager Nav
+@inject IHttpClientFactory HttpClientFactory
+@inject AuthenticationStateProvider AuthProvider
+
+<PageTitle>Settings - SuperTrigger</PageTitle>
+
+<MudText Typo="Typo.h5" Class="mb-4">Orchestrator & Service Settings</MudText>
+
+@if (!_isAdmin)
+{
+    <MudAlert Severity="Severity.Info" Dense="true" Class="mb-3" Icon="@Icons.Material.Filled.VisibilityOff">
+        Read-only view — contact an Admin to make changes.
+    </MudAlert>
+}
+
+@if (_settings == null)
+{
+    <MudProgressCircular Indeterminate="true" />
+}
+else
+{
+    <MudForm @ref="_form">
+        <fieldset disabled="@(!_isAdmin)" style="border:none;padding:0;margin:0">
+        <MudGrid>
+            <MudItem xs="12">
+                <MudText Typo="Typo.h6" Class="mb-2">UiPath Orchestrator</MudText>
+            </MudItem>
+            <MudItem xs="12" md="6">
+                <MudTextField @bind-Value="_settings.OrchestratorURL" Label="Orchestrator URL" Required="true" />
+            </MudItem>
+            <MudItem xs="12" md="6">
+                <MudTextField @bind-Value="_settings.TenantName" Label="Tenant Name" />
+            </MudItem>
+            <MudItem xs="12" md="6">
+                <MudTextField @bind-Value="_settings.Username" Label="Username" />
+            </MudItem>
+            <MudItem xs="12" md="6">
+                <MudTextField @bind-Value="_settings.Password" Label="Password" InputType="InputType.Password" />
+            </MudItem>
+            <MudItem xs="12" md="4">
+                <MudSwitch @bind-Value="_settings.SSO" Label="Use SSO" Color="Color.Primary" />
+            </MudItem>
+            <MudItem xs="12" md="4">
+                <MudSwitch @bind-Value="_settings.AuthNewMethod" Label="Use New Auth Method (OAuth2)" Color="Color.Primary" />
+            </MudItem>
+            <MudItem xs="12" md="4">
+                <MudSwitch @bind-Value="_settings.UseDefaultProxy" Label="Use Default Proxy" Color="Color.Primary" />
+            </MudItem>
+            <MudItem xs="12" md="6">
+                <MudTextField @bind-Value="_settings.ExternalAppScopes" Label="External App Scopes (OAuth2)" />
+            </MudItem>
+            <MudItem xs="12" md="6">
+                <MudTextField @bind-Value="_settings.OrchestratorMainFolderName" Label="Main Folder Name" Required="true" />
+            </MudItem>
+            <MudItem xs="12" md="6">
+                <MudTextField @bind-Value="_settings.OrchestratorGeneralFolderName" Label="General Folder Name" />
+            </MudItem>
+            <MudItem xs="12" md="6">
+                <MudTextField @bind-Value="_settings.CyberArkSDKFilePath" Label="CyberArk SDK File Path" />
+            </MudItem>
+
+            <MudItem xs="12">
+                <MudDivider Class="my-3" />
+                <MudText Typo="Typo.h6" Class="mb-2">Microsoft Graph / Webhooks</MudText>
+            </MudItem>
+            <MudItem xs="12" md="8">
+                <MudTextField @bind-Value="_settings.PublicBaseUrl"
+                              Label="Public Base URL"
+                              HelperText="Public HTTPS URL of this server (e.g. https://supertrigger.company.com) — required for Graph webhooks" />
+            </MudItem>
+            <AuthorizeView Roles="Admin">
+            <MudItem xs="12" md="4" Class="d-flex align-end pb-2 gap-2">
+                <MudTooltip Text="Auto-detect ngrok tunnel — run 'ngrok http 5200' first">
+                    <MudButton Variant="Variant.Outlined"
+                               Color="Color.Secondary"
+                               StartIcon="@Icons.Material.Filled.NetworkCheck"
+                               OnClick="DetectNgrokAsync"
+                               Disabled="_detectingNgrok">
+                        @if (_detectingNgrok)
+                        {
+                            <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" />
+                        }
+                        Detect ngrok
+                    </MudButton>
+                </MudTooltip>
+            </MudItem>
+            </AuthorizeView>
+            <MudItem xs="12">
+                <MudText Typo="Typo.subtitle2" Class="mb-1">Global App ID + Secret (used when trigger is set to &quot;Global&quot;)</MudText>
+            </MudItem>
+            <MudItem xs="12" md="4">
+                <MudTextField @bind-Value="_settings.GraphTenantId" Label="Tenant ID" />
+            </MudItem>
+            <MudItem xs="12" md="4">
+                <MudTextField @bind-Value="_settings.GraphClientId" Label="Client ID (App ID)" />
+            </MudItem>
+            <MudItem xs="12" md="4">
+                <MudTextField @bind-Value="_settings.GraphClientSecret"
+                              Label="Client Secret"
+                              InputType="InputType.Password" />
+            </MudItem>
+
+            @* ── Global OAuth2 interactive login ────────────────────────── *@
+            <MudItem xs="12">
+                <MudText Typo="Typo.subtitle2" Class="mb-1">Global Interactive Sign-in (OAuth2 delegated)</MudText>
+                <MudText Typo="Typo.caption" Class="mb-2">
+                    Sign in once here to allow folder browsing and polling without per-trigger credentials.
+                </MudText>
+            </MudItem>
+            <MudItem xs="12">
+                @if (_settings != null && !string.IsNullOrEmpty(_settings.OAuthGlobalAccessToken) &&
+                     _settings.OAuthGlobalTokenExpiry.HasValue && DateTime.UtcNow < _settings.OAuthGlobalTokenExpiry.Value)
+                {
+                    <MudAlert Severity="Severity.Success" Dense="true" Icon="@Icons.Material.Filled.CheckCircle" Class="mb-2">
+                        Signed in
+                        @if (!string.IsNullOrEmpty(_settings!.OAuthGlobalUserUpn))
+                        {
+                            <span> as <strong>@_settings.OAuthGlobalUserUpn</strong></span>
+                        }
+                        &nbsp;·&nbsp; valid until @_settings!.OAuthGlobalTokenExpiry!.Value.ToLocalTime().ToString("HH:mm dd/MM")
+                    </MudAlert>
+                    <AuthorizeView Roles="Admin">
+                        <MudButton Variant="Variant.Outlined" Color="Color.Warning"
+                                   StartIcon="@Icons.Material.Filled.Refresh"
+                                   OnClick="GlobalSignInAsync" Disabled="_signingIn">
+                            Re-authenticate
+                        </MudButton>
+                    </AuthorizeView>
+                }
+                else
+                {
+                    @if (_settings != null && !string.IsNullOrEmpty(_settings.OAuthGlobalAccessToken))
+                    {
+                        <MudAlert Severity="Severity.Warning" Dense="true" Class="mb-2">
+                            Global token expired — please re-authenticate.
+                        </MudAlert>
+                    }
+                    <AuthorizeView Roles="Admin">
+                        <MudButton Variant="Variant.Filled" Color="Color.Primary"
+                                   StartIcon="@Icons.Material.Filled.Login"
+                                   OnClick="GlobalSignInAsync" Disabled="_signingIn">
+                            @if (_signingIn) { <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" /> }
+                            Sign in with Microsoft
+                        </MudButton>
+                    </AuthorizeView>
+                }
+            </MudItem>
+
+            <MudItem xs="12">
+                <MudDivider Class="my-3" />
+                <MudText Typo="Typo.h6" Class="mb-2">Active Directory</MudText>
+                <MudText Typo="Typo.caption" Class="mb-2">
+                    Service account for AD user/group search. Leave empty to use the process identity (works if the server runs as a domain account).
+                </MudText>
+            </MudItem>
+            <MudItem xs="12" md="6">
+                <MudTextField @bind-Value="_settings.AdUsername"
+                              Label="AD Username (DOMAIN\user or user@domain)"
+                              HelperText="e.g. HMS\svc-supertrigger" />
+            </MudItem>
+            <MudItem xs="12" md="6">
+                <MudTextField @bind-Value="_settings.AdPassword"
+                              Label="AD Password"
+                              InputType="InputType.Password" />
+            </MudItem>
+
+            <MudItem xs="12">
+                <MudDivider Class="my-3" />
+                <MudText Typo="Typo.h6" Class="mb-2">Mail Service (EWS polling)</MudText>
+            </MudItem>
+            <MudItem xs="12" md="6">
+                <MudTextField @bind-Value="_settings.MailServerURL" Label="Mail Server URL" />
+            </MudItem>
+            <MudItem xs="12" md="6">
+                <MudTextField @bind-Value="_settings.MailServerVersion" Label="Exchange Server Version (e.g. Exchange2016)" />
+            </MudItem>
+            <MudItem xs="12" md="4">
+                <MudNumericField @bind-Value="_settings.MailTriggerIntervalInMinutes"
+                                 Label="Mail Poll Interval (minutes)" Min="1" Max="60" />
+            </MudItem>
+            <MudItem xs="12" md="4">
+                <MudNumericField @bind-Value="_settings.SameFileIntervalInSeconds"
+                                 Label="Same-File Debounce (seconds)" Min="1" Max="300" />
+            </MudItem>
+
+            <AuthorizeView Roles="Admin">
+            <MudItem xs="12" Class="mt-4">
+                <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="SaveAsync">Save Settings</MudButton>
+            </MudItem>
+            </AuthorizeView>
+        </MudGrid>
+        </fieldset>
+    </MudForm>
+}
+
+@code {
+    private OrchSettings? _settings;
+    private MudForm _form = default!;
+    private bool _signingIn;
+    private bool _detectingNgrok;
+    private bool _isAdmin;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _settings = await SettingsService.GetAsync();
+        var state = await AuthProvider.GetAuthenticationStateAsync();
+        _isAdmin = state.User.IsInRole("Admin");
+    }
+
+    protected override void OnAfterRender(bool firstRender)
+    {
+        if (!firstRender) return;
+        var uri = new Uri(Nav.Uri);
+        var query = QueryHelpers.ParseQuery(uri.Query);
+        if (query.ContainsKey("auth_success"))
+        {
+            _settings = SettingsService.GetAsync().GetAwaiter().GetResult();
+            Snackbar.Add("Microsoft sign-in successful.", Severity.Success);
+            StateHasChanged();
+        }
+        else if (query.TryGetValue("auth_error", out var err))
+        {
+            _settings = SettingsService.GetAsync().GetAwaiter().GetResult();
+            Snackbar.Add($"Sign-in failed: {err}", Severity.Error);
+            StateHasChanged();
+        }
+    }
+
+    private async Task SaveAsync()
+    {
+        await _form.Validate();
+        if (!_form.IsValid) return;
+        await SettingsService.SaveAsync(_settings!);
+        Snackbar.Add("Settings saved", Severity.Success);
+    }
+
+    private async Task DetectNgrokAsync()
+    {
+        _detectingNgrok = true;
+        try
+        {
+            using var client = HttpClientFactory.CreateClient();
+            client.Timeout = TimeSpan.FromSeconds(4);
+
+            HttpResponseMessage resp;
+            try
+            {
+                resp = await client.GetAsync("http://localhost:4040/api/tunnels");
+            }
+            catch
+            {
+                Snackbar.Add("ngrok is not running. Start it first: ngrok http 5200", Severity.Warning);
+                return;
+            }
+
+            if (!resp.IsSuccessStatusCode)
+            {
+                Snackbar.Add($"ngrok API returned {resp.StatusCode}. Is ngrok running?", Severity.Warning);
+                return;
+            }
+
+            var json = JObject.Parse(await resp.Content.ReadAsStringAsync());
+            var httpsUrl = json["tunnels"]?
+                .FirstOrDefault(t => t["proto"]?.ToString() == "https")?
+                ["public_url"]?.ToString();
+
+            if (string.IsNullOrEmpty(httpsUrl))
+            {
+                Snackbar.Add("No HTTPS tunnel found. Run: ngrok http 5200", Severity.Warning);
+                return;
+            }
+
+            _settings!.PublicBaseUrl = httpsUrl.TrimEnd('/');
+            Snackbar.Add($"Detected: {httpsUrl} — save settings to apply.", Severity.Success);
+        }
+        finally
+        {
+            _detectingNgrok = false;
+        }
+    }
+
+    private async Task GlobalSignInAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_settings?.GraphClientId))
+        {
+            Snackbar.Add("Enter the Client ID first, then save settings.", Severity.Warning);
+            return;
+        }
+
+        _signingIn = true;
+        try
+        {
+            // Save current settings first so Client ID is persisted
+            await SettingsService.SaveAsync(_settings!);
+
+            var baseUri = !string.IsNullOrWhiteSpace(_settings.PublicBaseUrl)
+                ? _settings.PublicBaseUrl.TrimEnd('/')
+                : Nav.BaseUri.TrimEnd('/');
+            var redirectUri = $"{baseUri}/account/mail-oauth-callback";
+
+            var authUrl = await OAuthService.BuildGlobalAuthUrlAsync(redirectUri);
+            Nav.NavigateTo(authUrl, forceLoad: true);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+        finally
+        {
+            _signingIn = false;
+        }
+    }
+}
