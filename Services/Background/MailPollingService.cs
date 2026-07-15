@@ -106,13 +106,12 @@ public class MailPollingService(
 
     private async Task PollOnceOAuthAsync(MailTrigger trigger, OrchSettings settings)
     {
-        // Reload trigger from DB to pick up latest tokens
         await using var db = await dbFactory.CreateDbContextAsync();
         var fresh = await db.MailTriggers.FindAsync(trigger.Id);
         if (fresh == null || !fresh.Active) return;
 
         using var scope = scopeFactory.CreateScope();
-        var mailOAuthService = scope.ServiceProvider.GetRequiredService<SuperTrigger.Web.Services.Auth.MailOAuthService>();
+        var mailOAuthService = scope.ServiceProvider.GetRequiredService<MailOAuthService>();
         var accessToken = await mailOAuthService.GetValidAccessTokenAsync(fresh);
         if (accessToken == null)
         {
@@ -136,13 +135,13 @@ public class MailPollingService(
         var messages = await graphMailService.ListUnreadMessagesAsync(accessToken, mailboxUpn, fresh.MailFolder);
         foreach (var message in messages)
         {
-            if (!MatchesOAuthFilters(message, fresh)) continue;
+            if (!TriggerHelpers.MatchesMailFilters(message, fresh)) continue;
 
-            var payload = PrepareOAuthMailPayload(message, fresh);
+            var payload = TriggerHelpers.BuildGraphMailPayload(message, fresh);
             bool success = false;
             try
             {
-                var folderPath = BuildFolderPath(settings, fresh);
+                var folderPath = TriggerHelpers.BuildFolderPath(settings, fresh);
                 await orchestrator.AddQueueItemAsync(payload, fresh.QueueName, folderPath,
                     Enum.TryParse<QueueItemPriority>(fresh.Priority, out var p) ? p : QueueItemPriority.Normal);
                 success = true;
@@ -155,78 +154,6 @@ public class MailPollingService(
 
             await LogQueueItemAsync(fresh, payload, success, success ? null : "Failed to add queue item");
         }
-    }
-
-    private static bool MatchesOAuthFilters(JObject message, MailTrigger trigger)
-    {
-        var subject = message["subject"]?.ToString() ?? "";
-        var fromEmail = message["from"]?["emailAddress"]?["address"]?.ToString() ?? "";
-        var bodyContent = message["body"]?["content"]?.ToString() ?? "";
-
-        if (!string.IsNullOrEmpty(trigger.SubjectFilterContains) &&
-            !subject.Contains(trigger.SubjectFilterContains, StringComparison.OrdinalIgnoreCase))
-            return false;
-
-        if (!string.IsNullOrEmpty(trigger.BodyFilterContains) &&
-            !bodyContent.Contains(trigger.BodyFilterContains, StringComparison.OrdinalIgnoreCase))
-            return false;
-
-        if (!string.IsNullOrEmpty(trigger.From))
-        {
-            var fromFilters = trigger.From.Split(';',
-                StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-            if (fromFilters.Length > 0 &&
-                !fromFilters.Any(f => fromEmail.Contains(f, StringComparison.OrdinalIgnoreCase)))
-                return false;
-        }
-
-        return true;
-    }
-
-    private static string? ToLocal(string? graphDateTime)
-    {
-        if (string.IsNullOrEmpty(graphDateTime)) return graphDateTime;
-        try
-        {
-            var dt = DateTime.Parse(graphDateTime, null,
-                System.Globalization.DateTimeStyles.RoundtripKind);
-            if (dt.Kind == DateTimeKind.Utc)
-                dt = dt.ToLocalTime();
-            return dt.ToString("dd/MM/yyyy HH:mm:ss");
-        }
-        catch { return graphDateTime; }
-    }
-
-    private static JObject PrepareOAuthMailPayload(JObject message, MailTrigger trigger)
-    {
-        var subject = message["subject"]?.ToString() ?? "";
-        var from = message["from"]?["emailAddress"]?["address"]?.ToString() ?? "";
-        var received = ToLocal(message["receivedDateTime"]?.ToString()) ?? "";
-
-        var raw = $"{received}_{subject}_{from}";
-        var reference = raw[..Math.Min(128, raw.Length)];
-
-        var content = new JObject
-        {
-            ["TriggerName"] = trigger.TriggerName,
-            ["MailId"] = message["id"]?.ToString(),
-            ["MailInternetUID"] = message["internetMessageId"]?.ToString(),
-            ["MailFolder"] = trigger.MailFolder,
-            ["MailSharedBox"] = trigger.SharedMailBox,
-            ["Sender"] = from,
-            ["Subject"] = subject,
-            ["DateTimeReceived"] = received,
-            ["HasAttachments"] = message["hasAttachments"]?.ToString()
-        };
-
-        return new JObject
-        {
-            ["itemData"] = new JObject
-            {
-                ["Reference"] = reference,
-                ["SpecificContent"] = content
-            }
-        };
     }
 
     private async Task PollOnceAsync(
@@ -271,11 +198,11 @@ public class MailPollingService(
 
         foreach (var mail in mails)
         {
-            var payload = PrepareMailPayload(mail, trigger);
+            var payload = PrepareEwsMailPayload(mail, trigger);
             bool success = false;
             try
             {
-                var folderPath = BuildFolderPath(settings, trigger);
+                var folderPath = TriggerHelpers.BuildFolderPath(settings, trigger);
                 await orchestrator.AddQueueItemAsync(payload, trigger.QueueName, folderPath,
                     Enum.TryParse<QueueItemPriority>(trigger.Priority, out var p) ? p : QueueItemPriority.Normal);
                 success = true;
@@ -339,7 +266,7 @@ public class MailPollingService(
         return (username, password, false, cca);
     }
 
-    private static JObject PrepareMailPayload(MailMessage mail, MailTrigger trigger)
+    private static JObject PrepareEwsMailPayload(MailMessage mail, MailTrigger trigger)
     {
         var mailDetails = mail.Headers["Date"] + "_" + mail.Subject + "_" + mail.Sender.Address;
         var reference = mailDetails[..Math.Min(128, mailDetails.Length)];
@@ -391,19 +318,6 @@ public class MailPollingService(
         };
     }
 
-    private static string BuildFolderPath(OrchSettings settings, MailTrigger trigger)
-    {
-        var parts = new List<string> { settings.OrchestratorMainFolderName };
-        if (!string.IsNullOrEmpty(trigger.DivisionName))
-        {
-            parts.Add(trigger.DivisionName);
-            parts.Add(trigger.CompanyName);
-        }
-        parts.Add(trigger.BusinessDepartmentName);
-        parts.Add(trigger.BusinessProcessName);
-        return string.Join("/", parts);
-    }
-
     private async Task LogQueueItemAsync(MailTrigger trigger, JObject payload, bool success, string? error)
     {
         try
@@ -424,7 +338,7 @@ public class MailPollingService(
         catch { /* log errors should not crash the service */ }
     }
 
-    // NLog logger reference adapter - HMS.Mail.Exchange.Core expects ref Logger
+    // NLog logger reference adapter — HMS.Mail.Exchange.Core expects ref Logger
     private static NLog.Logger Nlog_dummy = NLog.LogManager.GetCurrentClassLogger();
 
     public override async Task StopAsync(CancellationToken cancellationToken)

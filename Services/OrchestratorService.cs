@@ -131,20 +131,8 @@ public class OrchestratorService(
         var authUrl = $"{settings.OrchestratorURL.TrimEnd('/')}/api/account/authenticate";
         var requestContent = new StringContent(payload.ToString(), Encoding.UTF8, "application/json");
 
-        Console.WriteLine("=== AUTH REQUEST (UserPass) ===");
-        Console.WriteLine($"  URL          : POST {authUrl}");
-        Console.WriteLine($"  Content-Type : {requestContent.Headers.ContentType}");
-        Console.WriteLine($"  Payload      : {payload}");
-        Console.WriteLine("================================");
-
         var response = await client.PostAsync(authUrl, requestContent);
         var body = await response.Content.ReadAsStringAsync();
-
-        Console.WriteLine("=== AUTH RESPONSE (UserPass) ===");
-        Console.WriteLine($"  Status  : {(int)response.StatusCode} {response.StatusCode}");
-        Console.WriteLine($"  Headers : {string.Join(", ", response.Headers.Select(h => $"{h.Key}={string.Join(",", h.Value)}"))}");
-        Console.WriteLine($"  Body    : {body}");
-        Console.WriteLine("================================");
 
         if (!response.IsSuccessStatusCode)
         {
@@ -177,23 +165,8 @@ public class OrchestratorService(
         };
         var content = new FormUrlEncodedContent(formFields);
 
-        Console.WriteLine("=== AUTH REQUEST (ExternalApp/OAuth2) ===");
-        Console.WriteLine($"  URL          : POST {identityUrl}");
-        Console.WriteLine($"  Content-Type : {content.Headers.ContentType}");
-        Console.WriteLine($"  grant_type   : client_credentials");
-        Console.WriteLine($"  client_id    : {settings.Username}");
-        Console.WriteLine($"  client_secret: {settings.Password}");
-        Console.WriteLine($"  scope        : {scopes}");
-        Console.WriteLine("=========================================");
-
         var response = await client.PostAsync(identityUrl, content);
         var body = await response.Content.ReadAsStringAsync();
-
-        Console.WriteLine("=== AUTH RESPONSE (ExternalApp/OAuth2) ===");
-        Console.WriteLine($"  Status  : {(int)response.StatusCode} {response.StatusCode}");
-        Console.WriteLine($"  Headers : {string.Join(", ", response.Headers.Select(h => $"{h.Key}={string.Join(",", h.Value)}"))}");
-        Console.WriteLine($"  Body    : {body}");
-        Console.WriteLine("==========================================");
 
         if (!response.IsSuccessStatusCode)
         {

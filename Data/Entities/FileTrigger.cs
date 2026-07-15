@@ -1,6 +1,6 @@
 namespace SuperTrigger.Web.Data.Entities;
 
-public class FileTrigger
+public class FileTrigger : IFolderTrigger
 {
     public int Id { get; set; }
     public bool Active { get; set; } = true;

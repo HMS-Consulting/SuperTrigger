@@ -1,6 +1,6 @@
 namespace SuperTrigger.Web.Data.Entities;
 
-public class MailTrigger
+public class MailTrigger : IFolderTrigger
 {
     public int Id { get; set; }
     public bool Active { get; set; } = true;

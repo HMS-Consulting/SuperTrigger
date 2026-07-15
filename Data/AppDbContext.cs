@@ -1,5 +1,7 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using SuperTrigger.Web.Data.Entities;
+using SuperTrigger.Web.Services;
 
 namespace SuperTrigger.Web.Data;
 
@@ -17,5 +19,37 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
         mb.Entity<OrchSettings>().HasData(new OrchSettings { Id = 1 });
         mb.Entity<MailTrigger>().HasIndex(e => e.TriggerName).IsUnique();
         mb.Entity<FileTrigger>().HasIndex(e => e.TriggerName).IsUnique();
+
+        // DPAPI-backed converters — transparent encrypt on write, decrypt on read.
+        var enc = new ValueConverter<string, string>(
+            v => FieldEncryption.Encrypt(v),
+            v => FieldEncryption.Decrypt(v));
+
+        // Nullable variant for string? fields — EF Core requires matching nullability.
+        var encNull = new ValueConverter<string?, string?>(
+            v => v == null ? null : FieldEncryption.Encrypt(v),
+            v => v == null ? null : FieldEncryption.Decrypt(v));
+
+        mb.Entity<OrchSettings>(e =>
+        {
+            e.Property(x => x.Password).HasConversion(enc);
+            e.Property(x => x.AdPassword).HasConversion(enc);
+            e.Property(x => x.GraphClientSecret).HasConversion(enc);
+            e.Property(x => x.OAuthGlobalAccessToken).HasConversion(encNull);
+            e.Property(x => x.OAuthGlobalRefreshToken).HasConversion(encNull);
+        });
+
+        mb.Entity<MailTrigger>(e =>
+        {
+            e.Property(x => x.Password).HasConversion(enc);
+            e.Property(x => x.GraphClientSecret).HasConversion(enc);
+            e.Property(x => x.OAuthAccessToken).HasConversion(encNull);
+            e.Property(x => x.OAuthRefreshToken).HasConversion(encNull);
+        });
+
+        mb.Entity<FileTrigger>(e =>
+        {
+            e.Property(x => x.WatcherPassword).HasConversion(enc);
+        });
     }
 }

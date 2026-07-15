@@ -113,7 +113,7 @@ public class FileWatcherService(
         {
             var settings = await settingsService.GetAsync();
             var payload = PrepareFilePayload(fullPath);
-            var folderPath = BuildFolderPath(settings, trigger);
+            var folderPath = TriggerHelpers.BuildFolderPath(settings, trigger);
 
             await orchestrator.AddQueueItemAsync(payload, trigger.QueueName, folderPath,
                 Enum.TryParse<QueueItemPriority>(trigger.Priority, out var p) ? p : QueueItemPriority.Normal);
@@ -144,19 +144,6 @@ public class FileWatcherService(
                 ["SpecificContent"] = new JObject { ["filePath"] = filePath }
             }
         };
-    }
-
-    private static string BuildFolderPath(OrchSettings settings, FileTrigger trigger)
-    {
-        var parts = new List<string> { settings.OrchestratorMainFolderName };
-        if (!string.IsNullOrEmpty(trigger.DivisionName))
-        {
-            parts.Add(trigger.DivisionName);
-            parts.Add(trigger.CompanyName);
-        }
-        parts.Add(trigger.BusinessDepartmentName);
-        parts.Add(trigger.BusinessProcessName);
-        return string.Join("/", parts);
     }
 
     private async Task LogQueueItemAsync(string triggerName, string queueName, string reference, string payload, bool success, string? error)
