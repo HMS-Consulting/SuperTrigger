@@ -2,8 +2,10 @@
 @attribute [Authorize(Roles = "Admin,Operator")]
 @inject IDbContextFactory<AppDbContext> DbFactory
 @inject AdSearchService AdSearch
+@inject AuthService AuthSvc
 @inject ISnackbar Snackbar
 @inject IDialogService DialogService
+@inject AuditLogService AuditLog
 @inject AuthenticationStateProvider AuthProvider
 
 <PageTitle>Users & Access - SuperTrigger</PageTitle>
@@ -120,6 +122,9 @@
 
     protected override async Task OnInitializedAsync() => await LoadPrincipalsAsync();
 
+    private async Task<string> CurrentUsernameAsync() =>
+        (await AuthProvider.GetAuthenticationStateAsync()).User.Identity?.Name ?? "unknown";
+
     private async Task LoadPrincipalsAsync()
     {
         await using var db = await DbFactory.CreateDbContextAsync();
@@ -134,16 +139,16 @@
             return;
         }
 
-        await using var db = await DbFactory.CreateDbContextAsync();
-        var authState = await AuthProvider.GetAuthenticationStateAsync();
-        var username = authState.User.Identity?.Name ?? "admin";
-        var user = await db.LocalUsers.FirstOrDefaultAsync(u => u.Username == username);
-        if (user == null) return;
-
-        user.PasswordHash = BCrypt.Net.BCrypt.HashPassword(_newPassword);
-        await db.SaveChangesAsync();
-        _newPassword = _confirmPassword = "";
-        Snackbar.Add("Password changed", Severity.Success);
+        if (await AuthSvc.ChangePasswordAsync("admin", _newPassword))
+        {
+            _newPassword = _confirmPassword = "";
+            await AuditLog.LogAsync(await CurrentUsernameAsync(), "Update", "User", "admin", "Password changed");
+            Snackbar.Add("Password changed", Severity.Success);
+        }
+        else
+        {
+            Snackbar.Add("Failed to change password — local admin account not found", Severity.Error);
+        }
     }
 
     private void SearchAd()
@@ -163,14 +168,16 @@
             Snackbar.Add("Already added", Severity.Info);
             return;
         }
+        var role = _addRoleMap.GetValueOrDefault(entry.Identifier, AppRole.Viewer);
         db.AdPrincipals.Add(new AdPrincipal
         {
             Identifier = entry.Identifier,
             DisplayName = entry.DisplayName,
             Type = entry.IsGroup ? AdPrincipalType.Group : AdPrincipalType.User,
-            Role = _addRoleMap.GetValueOrDefault(entry.Identifier, AppRole.Viewer)
+            Role = role
         });
         await db.SaveChangesAsync();
+        await AuditLog.LogAsync(await CurrentUsernameAsync(), "Create", "AdPrincipal", entry.Identifier, $"Role: {role}");
         Snackbar.Add("Added", Severity.Success);
         await LoadPrincipalsAsync();
     }
@@ -180,9 +187,11 @@
         await using var db = await DbFactory.CreateDbContextAsync();
         var p = await db.AdPrincipals.FindAsync(principal.Id);
         if (p == null) return;
+        var oldRole = p.Role;
         p.Role = newRole;
         await db.SaveChangesAsync();
         principal.Role = newRole;
+        await AuditLog.LogAsync(await CurrentUsernameAsync(), "Update", "AdPrincipal", principal.Identifier, $"Role: {oldRole} -> {newRole}");
     }
 
     private async Task RemovePrincipalAsync(AdPrincipal principal)
@@ -197,6 +206,7 @@
         {
             db.AdPrincipals.Remove(p);
             await db.SaveChangesAsync();
+            await AuditLog.LogAsync(await CurrentUsernameAsync(), "Delete", "AdPrincipal", p.Identifier);
             Snackbar.Add("Removed", Severity.Info);
             await LoadPrincipalsAsync();
         }

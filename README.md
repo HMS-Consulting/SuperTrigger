@@ -9,6 +9,10 @@ A .NET 8 Blazor Server application that monitors **email inboxes** and **file sy
 - [Overview](#overview)
 - [Prerequisites](#prerequisites)
 - [Installation](#installation)
+  - [Building the installer](#building-the-installer)
+  - [Installing](#installing)
+  - [Upgrading](#upgrading)
+  - [Uninstalling](#uninstalling)
 - [Configuration](#configuration)
   - [UiPath Orchestrator](#uipath-orchestrator)
   - [Mail Triggers](#mail-triggers)
@@ -40,27 +44,81 @@ All configuration (triggers, credentials, settings) is stored in a local SQLite 
 
 | Requirement | Details |
 |---|---|
-| .NET 8 Runtime | Windows, x64 |
+| Windows Server (or Windows 10/11 Pro) | IIS-hosted deployment |
+| IIS — Web Server role | Include the IIS Management Console feature |
+| ASP.NET Core 8 Hosting Bundle | Installs the ASP.NET Core Module (ANCM) IIS uses to host the app — [download](https://dotnet.microsoft.com/download/dotnet/8.0) |
 | UiPath Orchestrator | On-premises or Cloud |
-| Windows Server | Required for Windows Authentication and file-system impersonation |
 | Microsoft Exchange | Exchange 2013 SP1 or later (EWS mode) |
 | Azure AD App Registration | Required for Microsoft Graph / OAuth2 modes |
+
+The Hosting Bundle must be (re)installed *after* the IIS role is enabled — if IIS wasn't present yet when it ran, it silently skips registering ANCM and the app pool will fail with `500.19`.
 
 ---
 
 ## Installation
 
-1. Publish the application:
-   ```
-   dotnet publish -c Release -r win-x64 --self-contained false
-   ```
-2. Deploy the published output to the target server (e.g. `C:\HMS\SuperTriggerWeb`).
-3. Run as a Windows Service or IIS application pool (recommended: run as a domain service account).
-4. On first startup, the database is created automatically at:
-   ```
-   C:\ProgramData\HMS\SuperTriggerWeb\supertrigger.db
-   ```
-5. A default admin account (`admin` / `Admin1234!`) is created on first run — **change the password immediately**.
+The app ships as an MSI (`HMS_SuperTriggerWebInstaller.msi`, built from the sibling `CreateMSI.Web` project) that installs the published files, creates the IIS Application Pool + Website, and binds an SSL certificate — no manual IIS configuration needed.
+
+### Building the installer
+
+```powershell
+"C:\Windows\Microsoft.NET\Framework64\v4.0.30319\MSBuild.exe" CreateMSI.Web.wixproj -t:Build -p:Configuration=Release
+```
+This automatically runs `dotnet publish` for `SuperTrigger.Web` (framework-dependent) and produces:
+```
+CreateMSI.Web\bin\Release\HMS_SuperTriggerWebInstaller.msi
+```
+Requires WiX Toolset v3.11+ on the **build** machine only — not on the target server.
+
+### Installing
+
+Run the MSI as Administrator. It asks for two choices:
+- **Application Pool identity** — the built-in `ApplicationPoolIdentity`, or a specific `DOMAIN\user` + password
+- **SSL certificate** — pick an existing certificate from the machine's store, or generate a new self-signed one
+
+For unattended installs:
+```powershell
+msiexec /i HMS_SuperTriggerWebInstaller.msi /quiet /norestart /l*v install.log
+```
+
+Default result:
+
+| Item | Value |
+|---|---|
+| IIS site name | `SuperTrigger.Web` |
+| App pool name | `SuperTrigger.Web` |
+| Physical path | `C:\inetpub\SuperTrigger.Web` |
+| Binding | HTTPS only, port 443 — no port 80 listener |
+| Database | `C:\ProgramData\HMS\SuperTriggerWeb\supertrigger.db` |
+
+A default admin account (`admin` / `Admin123!`) is created on first run — **change the password immediately** in **Settings → Users & Access**.
+
+> **Self-signed certificates are never automatically trusted.** Browsers will show an "unsecure connection" warning on *any* machine that hasn't explicitly imported that specific certificate into its Trusted Root store — including the server itself when browsing locally. For production, use a certificate issued by a real CA (internal AD CS or public) via the "existing certificate" option instead.
+
+### Upgrading
+
+1. Bump the `Version` attribute on `<Product>` in `CreateMSI.Web\Product.wxs` (keep the same `UpgradeCode`).
+
+   Version format is **`YY.M.Build`** (calendar-based) — e.g. the first build in August 2026 is `26.8.1`, the second `26.8.2`, the first in September `26.9.1`. This is a deliberate workaround, not a style choice: MSI's `ProductVersion` field is packed as Major/Minor/Build with hard caps of 255/255/65535, so a full 4-digit year (`2026.8.1`) is rejected outright by `candle.exe` (`CNDL0242: Invalid product version`) — two-digit year fits comfortably until year 2255.
+
+   Also update `<Version>` in `SuperTrigger.Web.csproj` to the same value — it's what the in-app **About** page displays, and it's easy for it to silently drift out of sync with the installer version otherwise.
+2. Rebuild the MSI — this re-publishes the app with your latest code changes automatically.
+3. Run the new MSI on the target server. Same `UpgradeCode` + higher `Version` means Windows Installer replaces the old version in one operation — **do not uninstall first**.
+
+Upgrades skip the identity/certificate dialogs entirely and preserve whatever is already configured (including a `SpecificUser` app pool password, which IIS never exposes for re-reading anyway). Those choices are only asked again on a genuinely fresh install.
+
+### Uninstalling
+
+Via **Control Panel → Programs and Features** (listed as `HMS_SuperTrigger.Web`) is the reliable way. This removes the IIS website, application pool, and the bound SSL certificate registration, but **preserves**:
+- The SQLite database at `C:\ProgramData\HMS\SuperTriggerWeb\`
+- Any files IIS created at runtime that the installer never tracked (e.g. the ANCM `logs\` folder under the install directory)
+
+> **Command-line uninstall pitfall:** `msiexec /x path\to\HMS_SuperTriggerWebInstaller.msi` only works if that exact `.msi` file is the one currently installed — every build gets a new internal ProductCode (`Id="*"`), so an MSI you rebuilt after installing will fail with error 1605/1603. Find the actual installed ProductCode instead:
+> ```powershell
+> $code = (Get-ItemProperty HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*, HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\* -ErrorAction SilentlyContinue |
+>   Where-Object { $_.DisplayName -like "*SuperTrigger.Web*" }).PSChildName
+> msiexec /x $code /quiet /norestart
+> ```
 
 ---
 
@@ -189,7 +247,7 @@ Every queue item added to Orchestrator follows this structure:
 
 | Field | Description |
 |---|---|
-| `filePath` | Full path to the detected file |
+| `FilePath` | Full path to the detected file |
 
 ---
 

@@ -13,6 +13,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<AdPrincipal> AdPrincipals => Set<AdPrincipal>();
     public DbSet<QueueItemLog> QueueItemLogs => Set<QueueItemLog>();
     public DbSet<OrchSettings> OrchSettings => Set<OrchSettings>();
+    public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
 
     protected override void OnModelCreating(ModelBuilder mb)
     {

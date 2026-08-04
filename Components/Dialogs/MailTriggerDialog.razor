@@ -10,6 +10,8 @@
 @inject ISnackbar Snackbar
 @inject IDialogService DialogService
 @inject SuperTrigger.Web.Services.Graph.GraphMailService GraphMailService
+@inject AuditLogService AuditLog
+@inject AuthenticationStateProvider AuthProvider
 
 <MudDialog>
     <TitleContent>
@@ -283,20 +285,33 @@
                     break;
 
                 case "AppIdGlobal":
-                    if (string.IsNullOrWhiteSpace(settings.GraphClientId))
+                    if (string.IsNullOrWhiteSpace(settings.GraphClientSecret))
                     {
-                        Snackbar.Add("Global Graph credentials not configured in Settings.", Severity.Warning);
-                        return;
+                        // No app-only (client_credentials) secret configured -- fall back to the
+                        // delegated global sign-in ("Sign in with Microsoft" in Settings). This only
+                        // reaches mailboxes that signed-in user has delegated access to (their own
+                        // mailbox or shared mailboxes they're a member of), not arbitrary tenant
+                        // mailboxes -- that still requires a real Client Secret.
+                        accessToken = await OAuthService.GetValidGlobalAccessTokenAsync();
+                        if (accessToken == null)
+                        {
+                            Snackbar.Add("Global Graph credentials not configured — either set a Client Secret in Settings → Microsoft Graph, " +
+                                         "or sign in with Microsoft there (only reaches mailboxes you have access to).", Severity.Warning);
+                            return;
+                        }
                     }
-                    accessToken = await GraphMailService.GetAccessTokenAsync(
-                        settings.GraphTenantId, settings.GraphClientId, settings.GraphClientSecret);
+                    else
+                    {
+                        accessToken = await GraphMailService.GetAccessTokenAsync(
+                            settings.GraphTenantId, settings.GraphClientId, settings.GraphClientSecret);
+                    }
                     mailboxUpn = EditModel.SharedMailBox;
                     break;
 
                 case "AppIdPerTrigger":
-                    if (string.IsNullOrWhiteSpace(EditModel.GraphClientId))
+                    if (string.IsNullOrWhiteSpace(EditModel.GraphClientId) || string.IsNullOrWhiteSpace(EditModel.GraphClientSecret))
                     {
-                        Snackbar.Add("Per-trigger Graph credentials not configured.", Severity.Warning);
+                        Snackbar.Add("Per-trigger Graph credentials not configured — set Client ID and Client Secret above.", Severity.Warning);
                         return;
                     }
                     accessToken = await GraphMailService.GetAccessTokenAsync(
@@ -349,12 +364,17 @@
             EditModel.Active = false;
 
             // Persist trigger first so it has an ID for the OAuth state param
+            var isNew = EditModel.Id == 0;
             await using var db = await DbFactory.CreateDbContextAsync();
-            if (EditModel.Id == 0)
+            if (isNew)
                 db.MailTriggers.Add(EditModel);
             else
                 db.MailTriggers.Update(EditModel);
             await db.SaveChangesAsync();
+
+            var username = (await AuthProvider.GetAuthenticationStateAsync()).User.Identity?.Name ?? "unknown";
+            await AuditLog.LogAsync(username, isNew ? "Create" : "Update", "MailTrigger", EditModel.TriggerName,
+                isNew ? "Saved pending OAuth sign-in" : "Re-authenticating");
 
             // Use PublicBaseUrl from settings when available (required for Azure AD redirect URI to match)
             var settings = await SettingsService.GetAsync();

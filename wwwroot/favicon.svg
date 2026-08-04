@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- Background Container -->
+  <rect x="16" y="16" width="224" height="224" rx="48" fill="#0F172A"/>
+  
+  <!-- Folder Symbol (Network Listener) -->
+  <path d="M48 80 C48 71.16 55.16 64 64 64 L104 64 L124 84 L192 84 C200.84 84 208 91.16 208 100 L208 184 C208 192.84 200.84 200 192 200 L64 200 C55.16 200 48 192.84 48 184 Z" fill="#3B82F6" opacity="0.95"/>
+  
+  <!-- Mail Envelope Symbol (Email Listener) -->
+  <rect x="64" y="112" width="76" height="56" rx="8" fill="#F8FAFC"/>
+  <path d="M64 112 L102 140 L140 112" stroke="#94A3B8" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  
+  <!-- UiPath Queue Elements (Queue Items) -->
+  <rect x="154" y="118" width="38" height="8" rx="4" fill="#FA4616"/>
+  <rect x="154" y="136" width="38" height="8" rx="4" fill="#FA4616"/>
+  <rect x="154" y="154" width="38" height="8" rx="4" fill="#FA4616"/>
+  
+  <!-- Arrow indicating processing/queue flow -->
+  <path d="M173 170 L173 186 M165 178 L173 186 L181 178" stroke="#FA4616" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+</svg>

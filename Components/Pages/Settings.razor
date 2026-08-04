@@ -9,6 +9,7 @@
 @inject NavigationManager Nav
 @inject IHttpClientFactory HttpClientFactory
 @inject AuthenticationStateProvider AuthProvider
+@inject AuditLogService AuditLog
 
 <PageTitle>Settings - SuperTrigger</PageTitle>
 
@@ -40,10 +41,11 @@ else
                 <MudTextField @bind-Value="_settings.TenantName" Label="Tenant Name" />
             </MudItem>
             <MudItem xs="12" md="6">
-                <MudTextField @bind-Value="_settings.Username" Label="Username" />
+                <MudTextField @bind-Value="_settings.Username" Label="Username/App Id" />
             </MudItem>
             <MudItem xs="12" md="6">
-                <MudTextField @bind-Value="_settings.Password" Label="Password" InputType="InputType.Password" />
+                <MudTextField @bind-Value="_passwordInput" Label="Password/App Secret" InputType="InputType.Password"
+                              HelperText="Leave empty to keep the currently saved value" />
             </MudItem>
             <MudItem xs="12" md="4">
                 <MudSwitch @bind-Value="_settings.SSO" Label="Use SSO" Color="Color.Primary" />
@@ -103,9 +105,10 @@ else
                 <MudTextField @bind-Value="_settings.GraphClientId" Label="Client ID (App ID)" />
             </MudItem>
             <MudItem xs="12" md="4">
-                <MudTextField @bind-Value="_settings.GraphClientSecret"
+                <MudTextField @bind-Value="_graphClientSecretInput"
                               Label="Client Secret"
-                              InputType="InputType.Password" />
+                              InputType="InputType.Password"
+                              HelperText="Leave empty to keep the currently saved value" />
             </MudItem>
 
             @* ── Global OAuth2 interactive login ────────────────────────── *@
@@ -167,9 +170,10 @@ else
                               HelperText="e.g. HMS\svc-supertrigger" />
             </MudItem>
             <MudItem xs="12" md="6">
-                <MudTextField @bind-Value="_settings.AdPassword"
+                <MudTextField @bind-Value="_adPasswordInput"
                               Label="AD Password"
-                              InputType="InputType.Password" />
+                              InputType="InputType.Password"
+                              HelperText="Leave empty to keep the currently saved value" />
             </MudItem>
 
             <MudItem xs="12">
@@ -208,11 +212,43 @@ else
     private bool _detectingNgrok;
     private bool _isAdmin;
 
+    // Password-type fields are never pre-filled with the saved value (so opening Settings doesn't
+    // reveal that a secret exists, or its length) -- these start empty regardless. Saving only
+    // overwrites the real value in _settings if the admin actually typed something here.
+    private string _passwordInput = "";
+    private string _graphClientSecretInput = "";
+    private string _adPasswordInput = "";
+
+    private OrchSettings? _original;
+
     protected override async Task OnInitializedAsync()
     {
         _settings = await SettingsService.GetAsync();
+        _original = CloneSettings(_settings);
         var state = await AuthProvider.GetAuthenticationStateAsync();
         _isAdmin = state.User.IsInRole("Admin");
+    }
+
+    private static OrchSettings CloneSettings(OrchSettings s) =>
+        Newtonsoft.Json.JsonConvert.DeserializeObject<OrchSettings>(Newtonsoft.Json.JsonConvert.SerializeObject(s))!;
+
+    private static List<string> GetChangedFields(OrchSettings before, OrchSettings after)
+    {
+        var changed = new List<string>();
+        foreach (var prop in typeof(OrchSettings).GetProperties())
+        {
+            if (prop.Name == nameof(OrchSettings.Id)) continue;
+            if (!Equals(prop.GetValue(before), prop.GetValue(after)))
+                changed.Add(prop.Name);
+        }
+        return changed;
+    }
+
+    private void ApplyPendingSecrets()
+    {
+        if (!string.IsNullOrEmpty(_passwordInput)) _settings!.Password = _passwordInput;
+        if (!string.IsNullOrEmpty(_graphClientSecretInput)) _settings!.GraphClientSecret = _graphClientSecretInput;
+        if (!string.IsNullOrEmpty(_adPasswordInput)) _settings!.AdPassword = _adPasswordInput;
     }
 
     protected override void OnAfterRender(bool firstRender)
@@ -238,7 +274,19 @@ else
     {
         await _form.Validate();
         if (!_form.IsValid) return;
+        ApplyPendingSecrets();
+
+        var changedFields = GetChangedFields(_original!, _settings!);
         await SettingsService.SaveAsync(_settings!);
+        _passwordInput = _graphClientSecretInput = _adPasswordInput = "";
+
+        if (changedFields.Count > 0)
+        {
+            var user = (await AuthProvider.GetAuthenticationStateAsync()).User.Identity?.Name ?? "unknown";
+            await AuditLog.LogAsync(user, "Update", "Settings", "Orchestrator & Service Settings", string.Join(", ", changedFields));
+        }
+        _original = CloneSettings(_settings!);
+
         Snackbar.Add("Settings saved", Severity.Success);
     }
 
@@ -299,7 +347,9 @@ else
         try
         {
             // Save current settings first so Client ID is persisted
+            ApplyPendingSecrets();
             await SettingsService.SaveAsync(_settings!);
+            _passwordInput = _graphClientSecretInput = _adPasswordInput = "";
 
             var baseUri = !string.IsNullOrWhiteSpace(_settings.PublicBaseUrl)
                 ? _settings.PublicBaseUrl.TrimEnd('/')

@@ -58,7 +58,10 @@ public class FileWatcherService(
                 {
                     try
                     {
-                        var filter = trigger.FileNameContains + "*." + ext.TrimStart('.');
+                        var namePattern = trigger.FileNameMatchMode == "Equals"
+                            ? trigger.FileNameContains
+                            : "*" + trigger.FileNameContains + "*";
+                        var filter = namePattern + "." + ext.TrimStart('.');
                         var watcher = CreateWatcher(trigger.FolderPath, filter, trigger.WatcherUsername, trigger.WatcherPassword);
 
                         watcher.Created += (s, e) => OnFileEvent(e.FullPath, trigger);
@@ -141,7 +144,7 @@ public class FileWatcherService(
             ["itemData"] = new JObject
             {
                 ["Reference"] = reference,
-                ["SpecificContent"] = new JObject { ["filePath"] = filePath }
+                ["SpecificContent"] = new JObject { ["FilePath"] = filePath }
             }
         };
     }

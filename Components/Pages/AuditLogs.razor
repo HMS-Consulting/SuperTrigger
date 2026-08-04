@@ -1,0 +1,149 @@
+@page "/audit-logs"
+@attribute [Authorize(Roles = "Admin,Operator")]
+@inject IDbContextFactory<AppDbContext> DbFactory
+
+<PageTitle>Audit Logs - SuperTrigger</PageTitle>
+
+<div class="d-flex align-center justify-space-between mb-4">
+    <MudText Typo="Typo.h5">Audit Logs</MudText>
+    <div class="d-flex gap-2">
+        <MudButton Size="Size.Small" Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.FilterAltOff"
+                   OnClick="ClearFilters">Clear Filters</MudButton>
+        <MudTooltip Text="Refresh">
+            <MudIconButton Icon="@Icons.Material.Filled.Refresh" Color="Color.Primary" OnClick="LoadAsync" />
+        </MudTooltip>
+    </div>
+</div>
+
+<MudPaper Class="pa-3 mb-4">
+    <MudGrid Spacing="2">
+        <MudItem xs="12" sm="6" md="2">
+            <MudDatePicker Label="From Date" Date="_fromDate" Margin="Margin.Dense"
+                           DateChanged="@(d => { _fromDate = d; _ = LoadAsync(); })" />
+        </MudItem>
+        <MudItem xs="12" sm="6" md="2">
+            <MudDatePicker Label="To Date" Date="_toDate" Margin="Margin.Dense"
+                           DateChanged="@(d => { _toDate = d; _ = LoadAsync(); })" />
+        </MudItem>
+        <MudItem xs="12" sm="6" md="2">
+            <MudTextField @bind-Value="_userFilter" Label="User" Immediate="true"
+                          DebounceInterval="400" OnDebounceIntervalElapsed="LoadAsync"
+                          Clearable="true" Margin="Margin.Dense" />
+        </MudItem>
+        <MudItem xs="12" sm="6" md="2">
+            <MudSelect T="string" Label="Action" Value="_actionFilter" Margin="Margin.Dense"
+                       ValueChanged="@(v => { _actionFilter = v; _ = LoadAsync(); })">
+                <MudSelectItem Value="@("")">All</MudSelectItem>
+                <MudSelectItem Value="@("Create")">Create</MudSelectItem>
+                <MudSelectItem Value="@("Update")">Update</MudSelectItem>
+                <MudSelectItem Value="@("Delete")">Delete</MudSelectItem>
+            </MudSelect>
+        </MudItem>
+        <MudItem xs="12" sm="6" md="2">
+            <MudSelect T="string" Label="Entity Type" Value="_entityTypeFilter" Margin="Margin.Dense"
+                       ValueChanged="@(v => { _entityTypeFilter = v; _ = LoadAsync(); })">
+                <MudSelectItem Value="@("")">All</MudSelectItem>
+                <MudSelectItem Value="@("FileTrigger")">File Trigger</MudSelectItem>
+                <MudSelectItem Value="@("MailTrigger")">Mail Trigger</MudSelectItem>
+                <MudSelectItem Value="@("Settings")">Settings</MudSelectItem>
+                <MudSelectItem Value="@("User")">User</MudSelectItem>
+                <MudSelectItem Value="@("AdPrincipal")">AD Principal</MudSelectItem>
+            </MudSelect>
+        </MudItem>
+        <MudItem xs="12" sm="6" md="2">
+            <MudTextField @bind-Value="_nameFilter" Label="Entity Name" Immediate="true"
+                          DebounceInterval="400" OnDebounceIntervalElapsed="LoadAsync"
+                          Clearable="true" Margin="Margin.Dense" />
+        </MudItem>
+    </MudGrid>
+    @if (!_loading)
+    {
+        <MudText Typo="Typo.caption" Class="mt-1" Style="color:var(--mud-palette-text-secondary)">
+            @_logs.Count result(s)@(_logs.Count >= 500 ? " (capped at 500 — narrow your filters to see more)" : "")
+        </MudText>
+    }
+</MudPaper>
+
+<MudTable Items="_logs" Dense="true" Hover="true" Striped="true" Loading="_loading">
+    <HeaderContent>
+        <MudTh>Time</MudTh>
+        <MudTh>User</MudTh>
+        <MudTh>Action</MudTh>
+        <MudTh>Entity Type</MudTh>
+        <MudTh>Entity Name</MudTh>
+        <MudTh>Details</MudTh>
+    </HeaderContent>
+    <RowTemplate>
+        <MudTd>@context.CreatedAt.ToString("dd/MM/yyyy HH:mm:ss")</MudTd>
+        <MudTd>@context.Username</MudTd>
+        <MudTd>
+            <MudChip T="string" Size="Size.Small" Color="@ActionColor(context.Action)">@context.Action</MudChip>
+        </MudTd>
+        <MudTd>@context.EntityType</MudTd>
+        <MudTd>@context.EntityName</MudTd>
+        <MudTd>
+            <MudTooltip Text="@context.Details">
+                <MudText Style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block;">
+                    @context.Details
+                </MudText>
+            </MudTooltip>
+        </MudTd>
+    </RowTemplate>
+    <PagerContent>
+        <MudTablePager PageSizeOptions="new int[]{ 25, 50, 100 }" />
+    </PagerContent>
+</MudTable>
+
+@code {
+    private List<AuditLog> _logs = [];
+    private bool _loading;
+    private DateTime? _fromDate = DateTime.Today.AddDays(-30);
+    private DateTime? _toDate = DateTime.Today.AddDays(1);
+    private string _userFilter = "";
+    private string _actionFilter = "";
+    private string _entityTypeFilter = "";
+    private string _nameFilter = "";
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private static Color ActionColor(string action) => action switch
+    {
+        "Create" => Color.Success,
+        "Delete" => Color.Error,
+        _ => Color.Info
+    };
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        StateHasChanged();
+
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var query = db.AuditLogs.AsQueryable();
+
+        if (_fromDate.HasValue) query = query.Where(l => l.CreatedAt >= _fromDate.Value);
+        if (_toDate.HasValue) query = query.Where(l => l.CreatedAt < _toDate.Value);
+        if (!string.IsNullOrWhiteSpace(_userFilter))
+            query = query.Where(l => l.Username.Contains(_userFilter));
+        if (!string.IsNullOrEmpty(_actionFilter))
+            query = query.Where(l => l.Action == _actionFilter);
+        if (!string.IsNullOrEmpty(_entityTypeFilter))
+            query = query.Where(l => l.EntityType == _entityTypeFilter);
+        if (!string.IsNullOrWhiteSpace(_nameFilter))
+            query = query.Where(l => l.EntityName.Contains(_nameFilter));
+
+        _logs = await query.OrderByDescending(l => l.CreatedAt).Take(500).ToListAsync();
+        _loading = false;
+    }
+
+    private async Task ClearFilters()
+    {
+        _fromDate = DateTime.Today.AddDays(-30);
+        _toDate = DateTime.Today.AddDays(1);
+        _userFilter = "";
+        _actionFilter = "";
+        _entityTypeFilter = "";
+        _nameFilter = "";
+        await LoadAsync();
+    }
+}

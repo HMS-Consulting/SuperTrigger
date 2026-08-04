@@ -5,6 +5,8 @@
 @inject TriggerReloadChannel ReloadChannel
 @inject ISnackbar Snackbar
 @inject IDialogService DialogService
+@inject AuditLogService AuditLog
+@inject AuthenticationStateProvider AuthProvider
 
 <PageTitle>File Triggers - SuperTrigger</PageTitle>
 
@@ -150,6 +152,9 @@
 
     protected override async Task OnInitializedAsync() => await LoadAsync();
 
+    private async Task<string> CurrentUsernameAsync() =>
+        (await AuthProvider.GetAuthenticationStateAsync()).User.Identity?.Name ?? "unknown";
+
     private async Task LoadAsync()
     {
         _loading = true;
@@ -181,6 +186,9 @@
         items.ForEach(t => t.Active = true);
         await db.SaveChangesAsync();
         ReloadChannel.RequestReload();
+        var user = await CurrentUsernameAsync();
+        foreach (var t in items)
+            await AuditLog.LogAsync(user, "Update", "FileTrigger", t.TriggerName, "Activated");
         Snackbar.Add($"Activated {items.Count} trigger(s)", Severity.Success);
         await LoadAsync();
     }
@@ -193,6 +201,9 @@
         items.ForEach(t => t.Active = false);
         await db.SaveChangesAsync();
         ReloadChannel.RequestReload();
+        var user = await CurrentUsernameAsync();
+        foreach (var t in items)
+            await AuditLog.LogAsync(user, "Update", "FileTrigger", t.TriggerName, "Deactivated");
         Snackbar.Add($"Deactivated {items.Count} trigger(s)", Severity.Info);
         await LoadAsync();
     }
@@ -210,6 +221,9 @@
         db.FileTriggers.RemoveRange(items);
         await db.SaveChangesAsync();
         ReloadChannel.RequestReload();
+        var user = await CurrentUsernameAsync();
+        foreach (var t in items)
+            await AuditLog.LogAsync(user, "Delete", "FileTrigger", t.TriggerName);
         Snackbar.Add($"Deleted {items.Count} trigger(s)", Severity.Info);
         await LoadAsync();
     }
@@ -220,9 +234,12 @@
         var parameters = new DialogParameters<FileTriggerDialog> { { x => x.EditModel, model } };
         var options = new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true };
         var dialog = await DialogService.ShowAsync<FileTriggerDialog>("Add File Trigger", parameters, options);
-        if ((await dialog.Result) is { Canceled: false })
+        var result = await dialog.Result;
+        if (result is { Canceled: false })
         {
             ReloadChannel.RequestReload();
+            var saved = result.Data as FileTrigger;
+            await AuditLog.LogAsync(await CurrentUsernameAsync(), "Create", "FileTrigger", saved?.TriggerName ?? model.TriggerName);
             Snackbar.Add("Trigger added", Severity.Success);
             await LoadAsync();
         }
@@ -242,9 +259,11 @@
         var parameters = new DialogParameters<FileTriggerDialog> { { x => x.EditModel, model } };
         var options = new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true };
         var dialog = await DialogService.ShowAsync<FileTriggerDialog>("Edit File Trigger", parameters, options);
-        if ((await dialog.Result) is { Canceled: false })
+        var result = await dialog.Result;
+        if (result is { Canceled: false })
         {
             ReloadChannel.RequestReload();
+            await AuditLog.LogAsync(await CurrentUsernameAsync(), "Update", "FileTrigger", trigger.TriggerName);
             Snackbar.Add("Trigger saved", Severity.Success);
             await LoadAsync();
         }
@@ -260,6 +279,7 @@
         trigger.Active = value;
         if (!string.IsNullOrEmpty(_filterActive)) ApplyFilters();
         ReloadChannel.RequestReload();
+        await AuditLog.LogAsync(await CurrentUsernameAsync(), "Update", "FileTrigger", t.TriggerName, value ? "Activated" : "Deactivated");
     }
 
     private async Task DeleteAsync(FileTrigger trigger)
@@ -275,6 +295,7 @@
             db.FileTriggers.Remove(t);
             await db.SaveChangesAsync();
             ReloadChannel.RequestReload();
+            await AuditLog.LogAsync(await CurrentUsernameAsync(), "Delete", "FileTrigger", t.TriggerName);
             Snackbar.Add("Deleted", Severity.Info);
             await LoadAsync();
         }

@@ -14,7 +14,12 @@
         <MudForm @ref="_form" Class="d-flex flex-column gap-3" Style="min-width:420px">
             <MudTextField @bind-Value="EditModel.TriggerName" Label="Trigger Name" Required="true" />
             <MudTextField @bind-Value="EditModel.FolderPath" Label="Folder Path" Required="true" />
-            <MudTextField @bind-Value="EditModel.FileNameContains" Label="File Name Contains (prefix)" />
+            <MudRadioGroup T="string" @bind-Value="EditModel.FileNameMatchMode">
+                <MudRadio T="string" Value="@("Contains")" Color="Color.Primary">File name contains</MudRadio>
+                <MudRadio T="string" Value="@("Equals")" Color="Color.Primary">File name equals</MudRadio>
+            </MudRadioGroup>
+            <MudTextField @bind-Value="EditModel.FileNameContains"
+                          Label="@(EditModel.FileNameMatchMode == "Equals" ? "File Name (without extension)" : "File Name Contains")" />
             <TagInput @bind-Value="EditModel.FileTypes" Label="File Types" Placeholder="e.g. xlsx…" />
             <MudTextField @bind-Value="EditModel.QueueName" Label="Queue Name" Required="true" />
             <MudSelect T="string" @bind-Value="EditModel.Priority" Label="Priority">

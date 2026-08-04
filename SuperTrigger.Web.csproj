@@ -2,6 +2,8 @@
 
   <PropertyGroup>
     <TargetFramework>net8.0-windows</TargetFramework>
+    <!-- Keep in sync with CreateMSI.Web\Product.wxs Product/@Version on every release; shown on the About page. -->
+    <Version>26.8.8</Version>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>SuperTrigger.Web</RootNamespace>

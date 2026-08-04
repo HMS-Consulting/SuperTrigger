@@ -7,7 +7,8 @@ public class FileTrigger : IFolderTrigger
     public string TriggerName { get; set; } = "";
     public string FolderPath { get; set; } = "";
     public string FileNameContains { get; set; } = "";
-    public string FileTypes { get; set; } = "xlsx";
+    public string FileNameMatchMode { get; set; } = "Contains";
+    public string FileTypes { get; set; } = "";
     public string Priority { get; set; } = "Normal";
     public string QueueName { get; set; } = "";
     public string BusinessDepartmentName { get; set; } = "";

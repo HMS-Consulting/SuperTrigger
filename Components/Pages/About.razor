@@ -1,0 +1,43 @@
+@page "/about"
+@using System.Reflection
+@attribute [Authorize]
+
+<PageTitle>About - SuperTrigger</PageTitle>
+
+<MudText Typo="Typo.h5" Class="mb-4">About</MudText>
+
+<MudPaper Class="pa-4" MaxWidth="500px">
+    <MudText Typo="Typo.h6">SuperTrigger.Web</MudText>
+    <MudText Typo="Typo.body2" Class="mb-3" Style="color:var(--mud-palette-text-secondary)">
+        Monitors email inboxes and file system folders, and pushes queue items to UiPath Orchestrator.
+    </MudText>
+
+    <MudSimpleTable Dense="true">
+        <tbody>
+            <tr>
+                <td>Version</td>
+                <td>@_version</td>
+            </tr>
+            <tr>
+                <td>.NET Runtime</td>
+                <td>@Environment.Version</td>
+            </tr>
+            <tr>
+                <td>Server</td>
+                <td>@Environment.MachineName</td>
+            </tr>
+        </tbody>
+    </MudSimpleTable>
+</MudPaper>
+
+@code {
+    private string _version = "";
+
+    protected override void OnInitialized()
+    {
+        _version = Assembly.GetExecutingAssembly()
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
+            ?? Assembly.GetExecutingAssembly().GetName().Version?.ToString()
+            ?? "unknown";
+    }
+}

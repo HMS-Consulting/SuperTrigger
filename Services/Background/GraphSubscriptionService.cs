@@ -335,6 +335,19 @@ public class GraphSubscriptionService(
             return await oauthService.GetValidAccessTokenAsync(trigger);
         }
 
+        if (trigger.MailAuthMode == "AppIdGlobal" && string.IsNullOrWhiteSpace(settings.GraphClientSecret))
+        {
+            // No app-only (client_credentials) secret configured for the Global App ID -- fall back
+            // to the delegated global sign-in ("Sign in with Microsoft" in Settings). Only reaches
+            // mailboxes that signed-in user has delegated access to, not arbitrary tenant mailboxes.
+            using var scope = scopeFactory.CreateScope();
+            var oauthService = scope.ServiceProvider.GetRequiredService<MailOAuthService>();
+            var token = await oauthService.GetValidGlobalAccessTokenAsync();
+            if (token == null)
+                logger.LogWarning("Trigger [{Name}] (AppIdGlobal) has no Client Secret and no valid global sign-in — configure one in Settings.", trigger.TriggerName);
+            return token;
+        }
+
         var (tenantId, clientId, clientSecret) = ResolveAppCredentials(trigger, settings);
         if (string.IsNullOrWhiteSpace(tenantId) || string.IsNullOrWhiteSpace(clientId) || string.IsNullOrWhiteSpace(clientSecret))
         {

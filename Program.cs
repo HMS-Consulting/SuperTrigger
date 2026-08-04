@@ -2,6 +2,7 @@ using System.IO;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.Negotiate;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.EntityFrameworkCore;
 using MudBlazor.Services;
 using Newtonsoft.Json.Linq;
@@ -18,17 +19,39 @@ logger.Info("SuperTrigger.Web starting");
 
 try
 {
+    // Standalone DB setup mode, run manually by developers or by the MSI installer's
+    // MigrateDatabase custom action — not run automatically on normal app startup.
+    if (args.Length >= 2 && args[0] == "--migrate-db")
+    {
+        var migratePath = args[1];
+        try
+        {
+            await DatabaseMigrator.RunAsync(migratePath);
+            DatabaseMigrator.RecordDbPathInAppSettings(migratePath);
+            logger.Info($"Database migration completed successfully for '{migratePath}'");
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            logger.Error(ex, $"Database migration failed for '{migratePath}'");
+            return 1;
+        }
+    }
+
     var builder = WebApplication.CreateBuilder(args);
 
     // NLog
     builder.Logging.ClearProviders();
     builder.Host.UseNLog();
 
-    // SQLite
-    var dbPath = Path.Combine(
+    // SQLite — the DB file itself is created/migrated by the MSI installer (or by running
+    // `SuperTrigger.Web.exe --migrate-db <path>` manually), not by this app at startup.
+    var defaultDbPath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
         "HMS", "SuperTriggerWeb", "supertrigger.db");
-    Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
+    var dbPath = builder.Configuration["Database:Path"] is { Length: > 0 } configuredDbPath
+        ? configuredDbPath
+        : defaultDbPath;
 
     builder.Services.AddDbContextFactory<AppDbContext>(options =>
         options.UseSqlite($"Data Source={dbPath}"));
@@ -45,6 +68,11 @@ try
         options.AccessDeniedPath = "/account/login";
         options.ExpireTimeSpan = TimeSpan.FromHours(8);
         options.SlidingExpiration = true;
+        // Behind IIS with a valid HTTPS binding, ForwardedHeaders below makes the app see the real
+        // scheme, so this rejects the cookie (and therefore the session) on any non-HTTPS request.
+        options.Cookie.SecurePolicy = builder.Environment.IsDevelopment()
+            ? CookieSecurePolicy.SameAsRequest
+            : CookieSecurePolicy.Always;
     })
     .AddNegotiate();
 
@@ -65,6 +93,7 @@ try
     // App services
     builder.Services.AddSingleton<TriggerReloadChannel>();
     builder.Services.AddSingleton<AppSettingsService>();
+    builder.Services.AddSingleton<AuditLogService>();
     builder.Services.AddScoped<AuthService>();
     builder.Services.AddScoped<AdSearchService>();
     builder.Services.AddSingleton<OrchestratorService>();
@@ -83,61 +112,43 @@ try
 
     var app = builder.Build();
 
-    // Apply DB migrations on startup
+    // Fail fast if the DB hasn't been set up yet, instead of the app self-migrating at startup —
+    // schema setup/upgrades are now the MSI installer's job (or run manually via `--migrate-db`).
+    if (!File.Exists(dbPath))
+    {
+        logger.Error($"Database not found at '{dbPath}'. Run the installer, or run " +
+                     $"'SuperTrigger.Web.exe --migrate-db \"{dbPath}\"' to initialize it.");
+        return 1;
+    }
     using (var scope = app.Services.CreateScope())
     {
         var db = scope.ServiceProvider.GetRequiredService<IDbContextFactory<AppDbContext>>()
             .CreateDbContext();
-        db.Database.Migrate();
-
-        // Add columns that may not exist in DBs created before migrations were used
-        foreach (var sql in new[]
-        {
-            "ALTER TABLE MailTriggers ADD COLUMN MailAuthMode TEXT NOT NULL DEFAULT 'Interactive'",
-            "ALTER TABLE MailTriggers ADD COLUMN GraphClientId TEXT NOT NULL DEFAULT ''",
-            "ALTER TABLE MailTriggers ADD COLUMN GraphClientSecret TEXT NOT NULL DEFAULT ''",
-            "ALTER TABLE MailTriggers ADD COLUMN GraphSubscriptionId TEXT",
-            "ALTER TABLE MailTriggers ADD COLUMN GraphSubscriptionExpiry TEXT",
-            "ALTER TABLE MailTriggers ADD COLUMN OAuthAccessToken TEXT",
-            "ALTER TABLE MailTriggers ADD COLUMN OAuthRefreshToken TEXT",
-            "ALTER TABLE MailTriggers ADD COLUMN OAuthTokenExpiry TEXT",
-            "ALTER TABLE MailTriggers ADD COLUMN OAuthUserUpn TEXT",
-            "ALTER TABLE OrchSettings ADD COLUMN PublicBaseUrl TEXT NOT NULL DEFAULT ''",
-            "ALTER TABLE OrchSettings ADD COLUMN AdUsername TEXT NOT NULL DEFAULT ''",
-            "ALTER TABLE OrchSettings ADD COLUMN AdPassword TEXT NOT NULL DEFAULT ''",
-            "ALTER TABLE OrchSettings ADD COLUMN GraphTenantId TEXT NOT NULL DEFAULT ''",
-            "ALTER TABLE OrchSettings ADD COLUMN GraphClientId TEXT NOT NULL DEFAULT ''",
-            "ALTER TABLE OrchSettings ADD COLUMN GraphClientSecret TEXT NOT NULL DEFAULT ''",
-            "ALTER TABLE OrchSettings ADD COLUMN OAuthGlobalAccessToken TEXT",
-            "ALTER TABLE OrchSettings ADD COLUMN OAuthGlobalRefreshToken TEXT",
-            "ALTER TABLE OrchSettings ADD COLUMN OAuthGlobalTokenExpiry TEXT",
-            "ALTER TABLE OrchSettings ADD COLUMN OAuthGlobalUserUpn TEXT",
-            "ALTER TABLE FileTriggers ADD COLUMN WatcherUsername TEXT NOT NULL DEFAULT ''",
-            "ALTER TABLE FileTriggers ADD COLUMN WatcherPassword TEXT NOT NULL DEFAULT ''",
-            "CREATE UNIQUE INDEX IF NOT EXISTS IX_MailTriggers_TriggerName ON MailTriggers(TriggerName)",
-            "CREATE UNIQUE INDEX IF NOT EXISTS IX_FileTriggers_TriggerName ON FileTriggers(TriggerName)"
-        })
-        {
-            try { await db.Database.ExecuteSqlRawAsync(sql); }
-            catch { /* column already exists — safe to ignore */ }
-        }
-
-        // Migrate legacy UseGraphApi=1 rows → MailAuthMode='AppIdPerTrigger'
         try
         {
-            await db.Database.ExecuteSqlRawAsync(
-                "UPDATE MailTriggers SET MailAuthMode='AppIdPerTrigger' WHERE UseGraphApi=1 AND MailAuthMode='Interactive'");
+            await db.AuditLogs.AnyAsync();
         }
-        catch { /* UseGraphApi column may not exist on fresh installs */ }
-
-        var authService = scope.ServiceProvider.GetRequiredService<AuthService>();
-        await authService.EnsureDefaultAdminExistsAsync();
+        catch (Exception ex)
+        {
+            logger.Error(ex, $"Database schema at '{dbPath}' appears out of date. Run the installer, " +
+                              $"or run 'SuperTrigger.Web.exe --migrate-db \"{dbPath}\"' to update it.");
+            return 1;
+        }
     }
 
     if (!app.Environment.IsDevelopment())
     {
         app.UseExceptionHandler("/Error");
+        app.UseHsts();
     }
+
+    // Trust the scheme/IP that IIS (ANCM) forwards, so the app sees the real HTTPS scheme
+    // instead of the plain-HTTP connection between IIS and Kestrel.
+    app.UseForwardedHeaders(new ForwardedHeadersOptions
+    {
+        ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto
+    });
+    app.UseHttpsRedirection();
 
     // SDK 9.0 generates staticwebassets.endpoints.json for net8.0 targets, breaking _content/ serving
     var webRoot = app.Environment.WebRootPath ?? Path.Combine(AppContext.BaseDirectory, "wwwroot");
@@ -252,6 +263,7 @@ try
         .AddInteractiveServerRenderMode();
 
     await app.RunAsync();
+    return 0;
 }
 catch (Exception ex)
 {

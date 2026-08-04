@@ -264,8 +264,17 @@ public class GraphMailService(IHttpClientFactory httpFactory, ILogger<GraphMailS
         var resp = await client.GetAsync(url);
         if (!resp.IsSuccessStatusCode)
         {
-            logger.LogWarning("GetMailFolders failed [{Status}] mailbox={Mailbox}", resp.StatusCode, mailboxUpn);
-            return [];
+            var errorBody = await resp.Content.ReadAsStringAsync();
+            logger.LogWarning("GetMailFolders failed [{Status}] mailbox={Mailbox}: {Body}", resp.StatusCode, mailboxUpn, errorBody);
+
+            var hint = resp.StatusCode switch
+            {
+                System.Net.HttpStatusCode.Forbidden => "Access denied — the signed-in account/app does not have permission to this mailbox.",
+                System.Net.HttpStatusCode.NotFound => "Mailbox not found — check the email address.",
+                System.Net.HttpStatusCode.Unauthorized => "Not authorized — the access token may have expired.",
+                _ => "Could not list mail folders."
+            };
+            throw new Exception($"{hint} [{resp.StatusCode}]: {errorBody}");
         }
 
         var json = JObject.Parse(await resp.Content.ReadAsStringAsync());

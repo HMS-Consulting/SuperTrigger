@@ -7,6 +7,8 @@
 @inject ISnackbar Snackbar
 @inject IDialogService DialogService
 @inject NavigationManager Nav
+@inject AuditLogService AuditLog
+@inject AuthenticationStateProvider AuthProvider
 
 <PageTitle>Mail Triggers - SuperTrigger</PageTitle>
 
@@ -159,6 +161,9 @@
 
     protected override async Task OnInitializedAsync() => await LoadAsync();
 
+    private async Task<string> CurrentUsernameAsync() =>
+        (await AuthProvider.GetAuthenticationStateAsync()).User.Identity?.Name ?? "unknown";
+
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         if (!firstRender || _autoOpenDone) return;
@@ -214,6 +219,9 @@
         items.ForEach(t => t.Active = true);
         await db.SaveChangesAsync();
         ReloadChannel.RequestReload();
+        var user = await CurrentUsernameAsync();
+        foreach (var t in items)
+            await AuditLog.LogAsync(user, "Update", "MailTrigger", t.TriggerName, "Activated");
         Snackbar.Add($"Activated {items.Count} trigger(s)", Severity.Success);
         await LoadAsync();
     }
@@ -226,6 +234,9 @@
         items.ForEach(t => t.Active = false);
         await db.SaveChangesAsync();
         ReloadChannel.RequestReload();
+        var user = await CurrentUsernameAsync();
+        foreach (var t in items)
+            await AuditLog.LogAsync(user, "Update", "MailTrigger", t.TriggerName, "Deactivated");
         Snackbar.Add($"Deactivated {items.Count} trigger(s)", Severity.Info);
         await LoadAsync();
     }
@@ -243,6 +254,9 @@
         db.MailTriggers.RemoveRange(items);
         await db.SaveChangesAsync();
         ReloadChannel.RequestReload();
+        var user = await CurrentUsernameAsync();
+        foreach (var t in items)
+            await AuditLog.LogAsync(user, "Delete", "MailTrigger", t.TriggerName);
         Snackbar.Add($"Deleted {items.Count} trigger(s)", Severity.Info);
         await LoadAsync();
     }
@@ -253,9 +267,12 @@
         var parameters = new DialogParameters<MailTriggerDialog> { { x => x.EditModel, model } };
         var options = new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true };
         var dialog = await DialogService.ShowAsync<MailTriggerDialog>("Add Mail Trigger", parameters, options);
-        if ((await dialog.Result) is { Canceled: false })
+        var result = await dialog.Result;
+        if (result is { Canceled: false })
         {
             ReloadChannel.RequestReload();
+            var saved = result.Data as MailTrigger;
+            await AuditLog.LogAsync(await CurrentUsernameAsync(), "Create", "MailTrigger", saved?.TriggerName ?? model.TriggerName);
             Snackbar.Add("Trigger added", Severity.Success);
             await LoadAsync();
         }
@@ -284,9 +301,11 @@
         var parameters = new DialogParameters<MailTriggerDialog> { { x => x.EditModel, model } };
         var options = new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true };
         var dialog = await DialogService.ShowAsync<MailTriggerDialog>("Edit Mail Trigger", parameters, options);
-        if ((await dialog.Result) is { Canceled: false })
+        var result = await dialog.Result;
+        if (result is { Canceled: false })
         {
             ReloadChannel.RequestReload();
+            await AuditLog.LogAsync(await CurrentUsernameAsync(), "Update", "MailTrigger", trigger.TriggerName);
             Snackbar.Add("Trigger saved", Severity.Success);
             await LoadAsync();
         }
@@ -302,6 +321,7 @@
         trigger.Active = value;
         if (!string.IsNullOrEmpty(_filterActive)) ApplyFilters();
         ReloadChannel.RequestReload();
+        await AuditLog.LogAsync(await CurrentUsernameAsync(), "Update", "MailTrigger", t.TriggerName, value ? "Activated" : "Deactivated");
     }
 
     private async Task DeleteAsync(MailTrigger trigger)
@@ -317,6 +337,7 @@
             db.MailTriggers.Remove(t);
             await db.SaveChangesAsync();
             ReloadChannel.RequestReload();
+            await AuditLog.LogAsync(await CurrentUsernameAsync(), "Delete", "MailTrigger", t.TriggerName);
             Snackbar.Add("Deleted", Severity.Info);
             await LoadAsync();
         }
