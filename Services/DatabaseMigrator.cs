@@ -37,6 +37,7 @@ public static class DatabaseMigrator
         "ALTER TABLE FileTriggers ADD COLUMN WatcherUsername TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE FileTriggers ADD COLUMN WatcherPassword TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE FileTriggers ADD COLUMN FileNameMatchMode TEXT NOT NULL DEFAULT 'Contains'",
+        "ALTER TABLE OrchSettings ADD COLUMN RetentionDays INTEGER NOT NULL DEFAULT 14",
         "CREATE UNIQUE INDEX IF NOT EXISTS IX_MailTriggers_TriggerName ON MailTriggers(TriggerName)",
         "CREATE UNIQUE INDEX IF NOT EXISTS IX_FileTriggers_TriggerName ON FileTriggers(TriggerName)",
         """

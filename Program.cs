@@ -106,9 +106,11 @@ try
     // Background services
     builder.Services.AddSingleton<FileWatcherService>();
     builder.Services.AddSingleton<MailPollingService>();
+    builder.Services.AddSingleton<RetentionCleanupService>();
     builder.Services.AddHostedService(sp => sp.GetRequiredService<FileWatcherService>());
     builder.Services.AddHostedService(sp => sp.GetRequiredService<MailPollingService>());
     builder.Services.AddHostedService(sp => sp.GetRequiredService<GraphSubscriptionService>());
+    builder.Services.AddHostedService(sp => sp.GetRequiredService<RetentionCleanupService>());
 
     var app = builder.Build();
 

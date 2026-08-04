@@ -34,4 +34,7 @@ public class OrchSettings
     public string? OAuthGlobalRefreshToken { get; set; }
     public DateTime? OAuthGlobalTokenExpiry { get; set; }
     public string? OAuthGlobalUserUpn { get; set; }
+
+    // Retention policy for Logs / Audit Logs (days to keep before deletion)
+    public int RetentionDays { get; set; } = 14;
 }

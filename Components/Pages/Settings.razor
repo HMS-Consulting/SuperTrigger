@@ -195,6 +195,18 @@ else
                                  Label="Same-File Debounce (seconds)" Min="1" Max="300" />
             </MudItem>
 
+            <MudItem xs="12">
+                <MudDivider Class="my-3" />
+                <MudText Typo="Typo.h6" Class="mb-2">Retention Policy</MudText>
+                <MudText Typo="Typo.caption" Class="mb-2">
+                    Logs and Audit Logs older than this number of days are automatically deleted from the database.
+                </MudText>
+            </MudItem>
+            <MudItem xs="12" md="4">
+                <MudNumericField @bind-Value="_settings.RetentionDays"
+                                 Label="Log Retention (days)" Min="1" Max="30" Required="true" />
+            </MudItem>
+
             <AuthorizeView Roles="Admin">
             <MudItem xs="12" Class="mt-4">
                 <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="SaveAsync">Save Settings</MudButton>
