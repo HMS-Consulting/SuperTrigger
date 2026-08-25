@@ -58,6 +58,53 @@ public class GraphMailService(IHttpClientFactory httpFactory, ILogger<GraphMailS
         }
     }
 
+    // Resource Owner Password Credentials (ROPC) grant — trades a mailbox's own username/password
+    // for a delegated Graph token, without an interactive sign-in. clientSecret is optional: only
+    // needed when the Azure AD app registration is a confidential client rather than a public one.
+    public async Task<string> GetAccessTokenByPasswordAsync(
+        string tenantId, string clientId, string? clientSecret, string username, string password)
+    {
+        var key = $"ropc:{tenantId}:{clientId}:{username}";
+        await _tokenLock.WaitAsync();
+        try
+        {
+            if (_tokenCache.TryGetValue(key, out var cached) && DateTime.UtcNow < cached.Expiry)
+                return cached.Token;
+
+            var client = httpFactory.CreateClient();
+            var formData = new Dictionary<string, string>
+            {
+                ["grant_type"] = "password",
+                ["client_id"] = clientId,
+                ["username"] = username,
+                ["password"] = password,
+                ["scope"] = "https://graph.microsoft.com/.default"
+            };
+            if (!string.IsNullOrWhiteSpace(clientSecret))
+                formData["client_secret"] = clientSecret;
+
+            var url = $"https://login.microsoftonline.com/{tenantId}/oauth2/v2.0/token";
+            logger.LogDebug("Graph ROPC token request: POST {Url} client_id={ClientId} user={User}", url, clientId, username);
+
+            var resp = await client.PostAsync(url, new FormUrlEncodedContent(formData));
+            var body = await resp.Content.ReadAsStringAsync();
+            if (!resp.IsSuccessStatusCode)
+                throw new Exception($"Graph ROPC token failed [{resp.StatusCode}]: {body}");
+
+            var json = JObject.Parse(body);
+            var token = json["access_token"]!.ToString();
+            var expiresIn = json["expires_in"]?.Value<int>() ?? 3600;
+            _tokenCache[key] = (token, DateTime.UtcNow.AddSeconds(expiresIn - 60));
+
+            logger.LogInformation("Graph ROPC token acquired for {User}", username);
+            return token;
+        }
+        finally
+        {
+            _tokenLock.Release();
+        }
+    }
+
     public async Task<(string SubscriptionId, DateTime Expiry)> CreateSubscriptionAsync(
         string tenantId, string clientId, string clientSecret,
         string mailboxUpn, string folderName,
@@ -182,27 +229,66 @@ public class GraphMailService(IHttpClientFactory httpFactory, ILogger<GraphMailS
         return JObject.Parse(await resp.Content.ReadAsStringAsync());
     }
 
+    // Supports nested folder paths like "Inbox/test333" by walking childFolders segment by
+    // segment — a plain top-level displayName filter can't find a folder nested inside another.
     private async Task<string> ResolveFolderAsync(string token, string mailboxUpn, string folderName)
     {
-        if (string.IsNullOrWhiteSpace(folderName) || WellKnownFolders.Contains(folderName))
-            return string.IsNullOrWhiteSpace(folderName) ? "inbox" : folderName;
+        if (string.IsNullOrWhiteSpace(folderName))
+            return "inbox";
+
+        if (WellKnownFolders.Contains(folderName))
+            return folderName;
+
+        var segments = folderName.Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (segments.Length == 0)
+            return "inbox";
+
+        var client = CreateAuthClient(token);
 
         try
         {
-            var client = CreateAuthClient(token);
-            var encodedName = Uri.EscapeDataString(folderName);
-            var resp = await client.GetAsync(
-                $"{GraphBase}/users/{mailboxUpn}/mailFolders?$filter=displayName eq '{encodedName}'");
-            var body = JObject.Parse(await resp.Content.ReadAsStringAsync());
-            var id = body["value"]?.FirstOrDefault()?["id"]?.ToString();
-            if (!string.IsNullOrEmpty(id)) return id;
+            string? currentId = null;
+            foreach (var segment in segments)
+            {
+                if (currentId == null && WellKnownFolders.Contains(segment))
+                {
+                    currentId = segment;
+                    continue;
+                }
+
+                var childId = await ResolveChildFolderIdAsync(client, mailboxUpn, currentId, segment);
+                if (childId == null)
+                {
+                    logger.LogWarning(
+                        "Could not resolve mail folder segment '{Segment}' in path '{FolderName}', falling back to inbox",
+                        segment, folderName);
+                    return "inbox";
+                }
+
+                currentId = childId;
+            }
+
+            return currentId ?? "inbox";
         }
         catch (Exception ex)
         {
             logger.LogWarning(ex, "Could not resolve folder {FolderName}, falling back to inbox", folderName);
+            return "inbox";
         }
+    }
 
-        return "inbox";
+    private async Task<string?> ResolveChildFolderIdAsync(HttpClient client, string mailboxUpn, string? parentId, string displayName)
+    {
+        var encodedName = Uri.EscapeDataString(displayName.Replace("'", "''"));
+        var resource = parentId == null
+            ? $"{GraphBase}/users/{mailboxUpn}/mailFolders"
+            : $"{GraphBase}/users/{mailboxUpn}/mailFolders/{parentId}/childFolders";
+
+        var resp = await client.GetAsync($"{resource}?$filter=displayName eq '{encodedName}'");
+        if (!resp.IsSuccessStatusCode) return null;
+
+        var body = JObject.Parse(await resp.Content.ReadAsStringAsync());
+        return body["value"]?.FirstOrDefault()?["id"]?.ToString();
     }
 
     // ─── Delegated-access methods (OAuth2Interactive polling) ───────────────

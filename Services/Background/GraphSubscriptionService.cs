@@ -2,7 +2,6 @@ using Microsoft.EntityFrameworkCore;
 using Newtonsoft.Json.Linq;
 using SuperTrigger.Web.Data;
 using SuperTrigger.Web.Data.Entities;
-using SuperTrigger.Web.Services.Auth;
 using SuperTrigger.Web.Services.Graph;
 
 namespace SuperTrigger.Web.Services.Background;
@@ -13,7 +12,7 @@ public class GraphSubscriptionService(
     AppSettingsService settingsService,
     TriggerReloadChannel reloadChannel,
     OrchestratorService orchestrator,
-    IServiceScopeFactory scopeFactory,
+    GraphTriggerAuthService authService,
     ILogger<GraphSubscriptionService> logger) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -48,13 +47,13 @@ public class GraphSubscriptionService(
             var settings = await settingsService.GetAsync();
 
             await using var db = await dbFactory.CreateDbContextAsync();
-            var triggers = await db.MailTriggers
-                .Where(t => t.Active && t.MailAuthMode != "Interactive")
-                .ToListAsync();
+            var triggers = (await db.MailTriggers.Where(t => t.Active).ToListAsync())
+                .Where(t => t.UsesWebhook(settings))
+                .ToList();
 
             if (!triggers.Any())
             {
-                logger.LogInformation("No active Graph mail triggers found");
+                logger.LogInformation("No active webhook-mode Graph mail triggers found");
                 return;
             }
 
@@ -62,7 +61,7 @@ public class GraphSubscriptionService(
             {
                 logger.LogWarning(
                     "PublicBaseUrl is not set or is localhost — cannot create Graph webhooks for {Count} trigger(s). " +
-                    "Configure a public HTTPS URL (e.g. ngrok) in Settings → Microsoft Graph.",
+                    "Configure a public HTTPS URL (e.g. ngrok) in Settings → Mail.",
                     triggers.Count);
                 return;
             }
@@ -121,7 +120,7 @@ public class GraphSubscriptionService(
                 }
             }
 
-            var mailboxUpn = ResolveMailboxUpnForTrigger(trigger);
+            var mailboxUpn = ResolveMailboxUpnForTrigger(trigger, settings);
             var (subscriptionId, expiry) = await graphService.CreateSubscriptionAsync(
                 token, mailboxUpn, trigger.MailFolder, notificationUrl, trigger.Id.ToString());
 
@@ -194,12 +193,13 @@ public class GraphSubscriptionService(
             var threshold = DateTime.UtcNow.AddHours(24);
 
             await using var db = await dbFactory.CreateDbContextAsync();
-            var triggers = await db.MailTriggers
+            var triggers = (await db.MailTriggers
                 .Where(t => t.Active
-                    && t.MailAuthMode != "Interactive"
                     && t.GraphSubscriptionId != null
                     && t.GraphSubscriptionExpiry < threshold)
-                .ToListAsync();
+                .ToListAsync())
+                .Where(t => t.UsesWebhook(settings))
+                .ToList();
 
             var failedIds = new List<int>();
 
@@ -283,9 +283,11 @@ public class GraphSubscriptionService(
 
             await using var db = await dbFactory.CreateDbContextAsync();
             var trigger = await db.MailTriggers.FindAsync(triggerId);
-            if (trigger == null || !trigger.Active || !trigger.UsesWebhook) return;
+            if (trigger == null || !trigger.Active) return;
 
             var settings = await settingsService.GetAsync();
+            if (!trigger.UsesWebhook(settings)) return;
+
             var token = await ResolveAccessTokenAsync(trigger, settings);
             if (token == null)
             {
@@ -293,7 +295,7 @@ public class GraphSubscriptionService(
                 return;
             }
 
-            var mailboxUpn = ResolveMailboxUpnForTrigger(trigger);
+            var mailboxUpn = ResolveMailboxUpnForTrigger(trigger, settings);
             var message = await graphService.GetMessageAsync(token, mailboxUpn, messageId);
 
             if (message == null)
@@ -326,58 +328,11 @@ public class GraphSubscriptionService(
 
     // ─── Token / credential resolution ──────────────────────────────────────
 
-    private async Task<string?> ResolveAccessTokenAsync(MailTrigger trigger, OrchSettings settings)
-    {
-        if (trigger.MailAuthMode == "OAuth2Interactive")
-        {
-            using var scope = scopeFactory.CreateScope();
-            var oauthService = scope.ServiceProvider.GetRequiredService<MailOAuthService>();
-            return await oauthService.GetValidAccessTokenAsync(trigger);
-        }
+    private async Task<string?> ResolveAccessTokenAsync(MailTrigger trigger, OrchSettings settings) =>
+        await authService.ResolveAccessTokenAsync(trigger, settings);
 
-        if (trigger.MailAuthMode == "AppIdGlobal" && string.IsNullOrWhiteSpace(settings.GraphClientSecret))
-        {
-            // No app-only (client_credentials) secret configured for the Global App ID -- fall back
-            // to the delegated global sign-in ("Sign in with Microsoft" in Settings). Only reaches
-            // mailboxes that signed-in user has delegated access to, not arbitrary tenant mailboxes.
-            using var scope = scopeFactory.CreateScope();
-            var oauthService = scope.ServiceProvider.GetRequiredService<MailOAuthService>();
-            var token = await oauthService.GetValidGlobalAccessTokenAsync();
-            if (token == null)
-                logger.LogWarning("Trigger [{Name}] (AppIdGlobal) has no Client Secret and no valid global sign-in — configure one in Settings.", trigger.TriggerName);
-            return token;
-        }
-
-        var (tenantId, clientId, clientSecret) = ResolveAppCredentials(trigger, settings);
-        if (string.IsNullOrWhiteSpace(tenantId) || string.IsNullOrWhiteSpace(clientId) || string.IsNullOrWhiteSpace(clientSecret))
-        {
-            logger.LogWarning("Trigger [{Name}] ({Mode}) is missing Graph credentials", trigger.TriggerName, trigger.MailAuthMode);
-            return null;
-        }
-
-        return await graphService.GetAccessTokenAsync(tenantId, clientId, clientSecret);
-    }
-
-    private static (string tenantId, string clientId, string clientSecret) ResolveAppCredentials(
-        MailTrigger trigger, OrchSettings settings) =>
-        trigger.MailAuthMode switch
-        {
-            "AppIdGlobal" => (settings.GraphTenantId, settings.GraphClientId, settings.GraphClientSecret),
-            "AppIdPerTrigger" => (trigger.AzureTenantId, trigger.GraphClientId, trigger.GraphClientSecret),
-            _ => ("", "", "")
-        };
-
-    private static string ResolveMailboxUpnForTrigger(MailTrigger trigger)
-    {
-        if (!string.IsNullOrWhiteSpace(trigger.SharedMailBox))
-            return trigger.SharedMailBox;
-
-        if (trigger.MailAuthMode == "OAuth2Interactive" && !string.IsNullOrWhiteSpace(trigger.OAuthUserUpn))
-            return trigger.OAuthUserUpn;
-
-        throw new InvalidOperationException(
-            $"Trigger [{trigger.TriggerName}]: Shared Mailbox (UPN) is required for Graph API mode");
-    }
+    private static string ResolveMailboxUpnForTrigger(MailTrigger trigger, OrchSettings settings) =>
+        GraphTriggerAuthService.ResolveMailboxUpnForTrigger(trigger, settings);
 
     // ─── Helpers ────────────────────────────────────────────────────────────
 

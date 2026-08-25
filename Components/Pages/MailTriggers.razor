@@ -9,6 +9,7 @@
 @inject NavigationManager Nav
 @inject AuditLogService AuditLog
 @inject AuthenticationStateProvider AuthProvider
+@inject AppSettingsService SettingsService
 
 <PageTitle>Mail Triggers - SuperTrigger</PageTitle>
 
@@ -263,7 +264,12 @@
 
     private async Task OpenAddDialog()
     {
-        var model = new MailTrigger { Priority = "Normal", Active = true, MailFolder = "Inbox", AttachmentsType = "" };
+        var settings = await SettingsService.GetAsync();
+        var model = new MailTrigger
+        {
+            Priority = "Normal", Active = true, MailFolder = "Inbox", AttachmentsType = "",
+            GraphUseWebhook = settings.GraphDetectionMode != "Polling"
+        };
         var parameters = new DialogParameters<MailTriggerDialog> { { x => x.EditModel, model } };
         var options = new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true };
         var dialog = await DialogService.ShowAsync<MailTriggerDialog>("Add Mail Trigger", parameters, options);
@@ -296,7 +302,7 @@
             QueueName = trigger.QueueName, BusinessDepartmentName = trigger.BusinessDepartmentName,
             BusinessProcessName = trigger.BusinessProcessName, DivisionName = trigger.DivisionName,
             CompanyName = trigger.CompanyName, GraphSubscriptionId = trigger.GraphSubscriptionId,
-            GraphSubscriptionExpiry = trigger.GraphSubscriptionExpiry
+            GraphSubscriptionExpiry = trigger.GraphSubscriptionExpiry, GraphUseWebhook = trigger.GraphUseWebhook
         };
         var parameters = new DialogParameters<MailTriggerDialog> { { x => x.EditModel, model } };
         var options = new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true };

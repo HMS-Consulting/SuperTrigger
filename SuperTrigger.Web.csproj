@@ -3,18 +3,23 @@
   <PropertyGroup>
     <TargetFramework>net8.0-windows</TargetFramework>
     <!-- Keep in sync with CreateMSI.Web\Product.wxs Product/@Version on every release; shown on the About page. -->
-    <Version>26.8.8</Version>
+    <Version>26.8.31</Version>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>SuperTrigger.Web</RootNamespace>
     <AssemblyName>SuperTrigger.Web</AssemblyName>
-    <UseWindowsForms>true</UseWindowsForms>
-    <UseWpf>true</UseWpf>
+    <!-- No UseWindowsForms/UseWpf here on purpose: this is a headless IIS-hosted web app and uses no
+         WinForms/WPF API. Either flag adds a Microsoft.WindowsDesktop.App framework reference to
+         SuperTrigger.Web.runtimeconfig.json, which the ASP.NET Core Hosting Bundle does NOT install,
+         and the app then dies at startup with apphost exit code 0x80008096 (FrameworkMissingFailure).
+         Note the Mail/HmsTeam.Shared project references still drag WindowsDesktop.App in transitively;
+         CustomActions.EnsureAppRuntime is what guarantees it is actually present on the machine. -->
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="MudBlazor" Version="7.14.0" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="8.0.6" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="8.0.6" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="8.0.6">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>

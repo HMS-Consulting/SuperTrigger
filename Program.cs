@@ -2,7 +2,9 @@ using System.IO;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.Negotiate;
+using Microsoft.AspNetCore.Components.Server;
 using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 using MudBlazor.Services;
 using Newtonsoft.Json.Linq;
@@ -12,6 +14,7 @@ using SuperTrigger.Web.Data;
 using SuperTrigger.Web.Services;
 using SuperTrigger.Web.Services.Auth;
 using SuperTrigger.Web.Services.Background;
+using SuperTrigger.Web.Services.Database;
 using SuperTrigger.Web.Services.Graph;
 
 var logger = LogManager.Setup().LoadConfigurationFromFile(Path.Combine(AppContext.BaseDirectory, "nlog.config")).GetCurrentClassLogger();
@@ -20,20 +23,33 @@ logger.Info("SuperTrigger.Web starting");
 try
 {
     // Standalone DB setup mode, run manually by developers or by the MSI installer's
-    // MigrateDatabase custom action — not run automatically on normal app startup.
-    if (args.Length >= 2 && args[0] == "--migrate-db")
+    // SetupDatabase custom action — not run automatically on normal app startup.
+    //   --setup-db <request.json>   full setup: provider, schema, optional data migration from the
+    //                              previous database, and recording it all in appsettings.json
+    //   --migrate-db <sqlite path> the older SQLite-only form of the same thing
+    if (args.Length >= 2 && args[0] is "--setup-db" or "--migrate-db")
     {
-        var migratePath = args[1];
+        DbSetupRequest? request = null;
         try
         {
-            await DatabaseMigrator.RunAsync(migratePath);
-            DatabaseMigrator.RecordDbPathInAppSettings(migratePath);
-            logger.Info($"Database migration completed successfully for '{migratePath}'");
+            request = args[0] == "--setup-db"
+                ? DbSetupRequest.FromJsonFile(args[1])
+                : new DbSetupRequest
+                {
+                    Target = new DbConfig { Provider = DbProviderKind.Sqlite, SqlitePath = args[1] },
+                    CopyExistingData = false
+                };
+
+            await DatabaseMigrator.SetupAsync(request, Console.Out);
+            logger.Info($"Database setup completed successfully ({request.Target.Describe()})");
             return 0;
         }
         catch (Exception ex)
         {
-            logger.Error(ex, $"Database migration failed for '{migratePath}'");
+            logger.Error(ex, $"Database setup failed ({request?.Target.Describe() ?? args[1]})");
+            // The installer captures stdout/stderr of this process into the MSI log; include the
+            // whole chain, since the useful detail (SQL error, permission denied) is usually inner.
+            Console.Error.WriteLine("Database setup failed: " + ex);
             return 1;
         }
     }
@@ -44,17 +60,25 @@ try
     builder.Logging.ClearProviders();
     builder.Host.UseNLog();
 
-    // SQLite — the DB file itself is created/migrated by the MSI installer (or by running
-    // `SuperTrigger.Web.exe --migrate-db <path>` manually), not by this app at startup.
-    var defaultDbPath = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-        "HMS", "SuperTriggerWeb", "supertrigger.db");
-    var dbPath = builder.Configuration["Database:Path"] is { Length: > 0 } configuredDbPath
-        ? configuredDbPath
-        : defaultDbPath;
+    // SQLite file or SQL Server, per the Database section of appsettings.json. The database itself
+    // is created/migrated by the MSI installer (or by running `SuperTrigger.Web.exe --setup-db
+    // <request.json>` manually), never by this app at startup.
+    DbConfig dbConfig;
+    try
+    {
+        dbConfig = DbConfig.FromConfiguration(builder.Configuration);
+        logger.Info($"Database: {dbConfig.Describe()}");
+    }
+    catch (Exception ex)
+    {
+        logger.Error(ex, "The Database section of appsettings.json is not usable");
+        return 1;
+    }
 
+    builder.Services.AddSingleton(dbConfig);
+    // Retries transient SQL Server/network failures; a no-op for SQLite.
     builder.Services.AddDbContextFactory<AppDbContext>(options =>
-        options.UseSqlite($"Data Source={dbPath}"));
+        dbConfig.Configure(options, enableRetryOnFailure: true));
 
     // Auth: Cookie (default) + Negotiate (Windows/AD)
     builder.Services.AddAuthentication(options =>
@@ -85,6 +109,18 @@ try
     builder.Services.AddRazorComponents().AddInteractiveServerComponents();
     builder.Services.AddMudServices();
 
+    // Keep the SignalR circuit alive through brief network blips / backgrounded tabs
+    // (defaults are 3 min retention + 15s keep-alive, too short behind idle-closing proxies/NAT).
+    builder.Services.Configure<CircuitOptions>(options =>
+    {
+        options.DisconnectedCircuitRetentionPeriod = TimeSpan.FromMinutes(15);
+    });
+    builder.Services.Configure<HubOptions>(options =>
+    {
+        options.KeepAliveInterval = TimeSpan.FromSeconds(10);
+        options.ClientTimeoutInterval = TimeSpan.FromSeconds(60);
+    });
+
     // HTTP client for Orchestrator API calls
     builder.Services.AddHttpClient("Orchestrator");
 
@@ -100,6 +136,7 @@ try
 
     // Graph + OAuth services
     builder.Services.AddSingleton<GraphMailService>();
+    builder.Services.AddSingleton<GraphTriggerAuthService>();
     builder.Services.AddSingleton<GraphSubscriptionService>();
     builder.Services.AddScoped<MailOAuthService>();
 
@@ -112,14 +149,24 @@ try
     builder.Services.AddHostedService(sp => sp.GetRequiredService<GraphSubscriptionService>());
     builder.Services.AddHostedService(sp => sp.GetRequiredService<RetentionCleanupService>());
 
+    // Since .NET 6 the default is StopHost: one unhandled exception escaping any hosted service's
+    // ExecuteAsync tears down the whole application -- a mail-polling hiccup would take the web UI
+    // and every other trigger with it, and IIS only brings the process back on the next request.
+    // The services guard their own loops, so this is the backstop for anything that slips through.
+    builder.Services.Configure<HostOptions>(o =>
+        o.BackgroundServiceExceptionBehavior = BackgroundServiceExceptionBehavior.Ignore);
+
     var app = builder.Build();
 
     // Fail fast if the DB hasn't been set up yet, instead of the app self-migrating at startup —
-    // schema setup/upgrades are now the MSI installer's job (or run manually via `--migrate-db`).
-    if (!File.Exists(dbPath))
+    // schema setup/upgrades are now the MSI installer's job (or run manually via `--setup-db`).
+    var setupHint = dbConfig.IsSqlServer
+        ? "Run the installer, or run 'SuperTrigger.Web.exe --setup-db <request.json>' to set it up."
+        : $"Run the installer, or run 'SuperTrigger.Web.exe --migrate-db \"{dbConfig.SqlitePath}\"' to set it up.";
+
+    if (!dbConfig.IsSqlServer && !File.Exists(dbConfig.SqlitePath))
     {
-        logger.Error($"Database not found at '{dbPath}'. Run the installer, or run " +
-                     $"'SuperTrigger.Web.exe --migrate-db \"{dbPath}\"' to initialize it.");
+        logger.Error($"Database not found at '{dbConfig.SqlitePath}'. {setupHint}");
         return 1;
     }
     using (var scope = app.Services.CreateScope())
@@ -132,8 +179,8 @@ try
         }
         catch (Exception ex)
         {
-            logger.Error(ex, $"Database schema at '{dbPath}' appears out of date. Run the installer, " +
-                              $"or run 'SuperTrigger.Web.exe --migrate-db \"{dbPath}\"' to update it.");
+            logger.Error(ex, $"Could not read the database ({dbConfig.Describe()}) — it is unreachable, " +
+                             $"or its schema is out of date. {setupHint}");
             return 1;
         }
     }

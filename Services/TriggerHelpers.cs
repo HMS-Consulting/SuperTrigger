@@ -19,16 +19,36 @@ public static class TriggerHelpers
         return string.Join("/", parts);
     }
 
+    public static string? ToLocal(JToken? token)
+    {
+        if (token == null || token.Type == JTokenType.Null) return null;
+
+        // Newtonsoft turns ISO timestamps into Date tokens, so ToString() would drop
+        // the "Z" and leave us parsing a Kind=Unspecified value that never converts.
+        if (token is JValue { Value: DateTimeOffset dto })
+            return FormatLocal(dto.UtcDateTime);
+        if (token is JValue { Value: DateTime dt })
+            return FormatLocal(dt);
+
+        return ToLocal(token.ToString());
+    }
+
     public static string? ToLocal(string? graphDateTime)
     {
         if (string.IsNullOrEmpty(graphDateTime)) return graphDateTime;
         try
         {
-            var dt = DateTime.Parse(graphDateTime, null, System.Globalization.DateTimeStyles.RoundtripKind);
-            if (dt.Kind == DateTimeKind.Utc) dt = dt.ToLocalTime();
-            return dt.ToString("dd/MM/yyyy HH:mm:ss");
+            return FormatLocal(DateTime.Parse(graphDateTime, null, System.Globalization.DateTimeStyles.RoundtripKind));
         }
         catch { return graphDateTime; }
+    }
+
+    private static string FormatLocal(DateTime dt)
+    {
+        // Graph returns UTC for receivedDateTime, and for event start/end as long as we
+        // send no "Prefer: outlook.timezone" header - so an unspecified Kind is UTC too.
+        if (dt.Kind == DateTimeKind.Unspecified) dt = DateTime.SpecifyKind(dt, DateTimeKind.Utc);
+        return dt.ToLocalTime().ToString("dd/MM/yyyy HH:mm:ss");
     }
 
     public static bool MatchesMailFilters(JObject message, MailTrigger trigger)
@@ -60,7 +80,7 @@ public static class TriggerHelpers
     {
         var subject = message["subject"]?.ToString() ?? "";
         var from = message["from"]?["emailAddress"]?["address"]?.ToString() ?? "";
-        var received = ToLocal(message["receivedDateTime"]?.ToString()) ?? "";
+        var received = ToLocal(message["receivedDateTime"]) ?? "";
 
         var raw = $"{received}_{subject}_{from}";
         var reference = raw[..Math.Min(128, raw.Length)];
@@ -73,7 +93,8 @@ public static class TriggerHelpers
         var content = new JObject
         {
             ["TriggerName"] = trigger.TriggerName,
-            ["MailId"] = message["id"]?.ToString(),
+            ["MailUID_365"] = message["id"]?.ToString(),
+            ["MailId"] = message["id"]?.ToString()?.Replace('_', '+').Replace('-', '/'),
             ["MailInternetUID"] = message["internetMessageId"]?.ToString(),
             ["MailFolder"] = trigger.MailFolder,
             ["MailSharedBox"] = trigger.SharedMailBox,
@@ -96,8 +117,8 @@ public static class TriggerHelpers
             if (isMeetingRequest)
             {
                 content["MeetingRequestType"] = meetingType;
-                content["MeetingStart"] = ToLocal(evt?["start"]?["dateTime"]?.ToString());
-                content["MeetingEnd"] = ToLocal(evt?["end"]?["dateTime"]?.ToString());
+                content["MeetingStart"] = ToLocal(evt?["start"]?["dateTime"]);
+                content["MeetingEnd"] = ToLocal(evt?["end"]?["dateTime"]);
                 var location = evt?["location"]?["displayName"]?.ToString();
                 if (!string.IsNullOrEmpty(location)) content["MeetingLocation"] = location;
                 var evtType = evt?["type"]?.ToString() ?? "";

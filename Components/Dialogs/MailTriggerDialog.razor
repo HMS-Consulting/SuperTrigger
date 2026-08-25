@@ -25,9 +25,35 @@
             <MudSelect T="string" Value="@EditModel.MailAuthMode" ValueChanged="@OnAuthModeChanged" Label="Authentication Mode" Required="true">
                 <MudSelectItem Value="@("Interactive")">Interactive / EWS (SSO or Username+Password)</MudSelectItem>
                 <MudSelectItem Value="@("OAuth2Interactive")">Microsoft Graph — Interactive Login (OAuth2)</MudSelectItem>
-                <MudSelectItem Value="@("AppIdGlobal")">Microsoft Graph — Global App ID (from Settings)</MudSelectItem>
+                <MudSelectItem Value="@("AppIdGlobal")">Use Global Setting (as configured in Settings → Mail)</MudSelectItem>
                 <MudSelectItem Value="@("AppIdPerTrigger")">Microsoft Graph — Custom App ID (per trigger)</MudSelectItem>
+                <MudSelectItem Value="@("GraphUsernamePassword")">Microsoft Graph — Username &amp; Password</MudSelectItem>
             </MudSelect>
+
+            @* ── Graph: webhook vs. polling ─────────────────────────────── *@
+            @if (EditModel.MailAuthMode == "AppIdGlobal")
+            {
+                @if (EditModel.IsGraphMode(_settings))
+                {
+                    <MudAlert Severity="Severity.Info" Dense="true">
+                        Detection Mode follows the global setting (Settings → Mail → Detection Mode):
+                        currently <strong>@_settings.GraphDetectionMode</strong>.
+                    </MudAlert>
+                }
+            }
+            else if (EditModel.IsGraphMode(_settings))
+            {
+                <MudSelect T="bool" @bind-Value="EditModel.GraphUseWebhook" Label="Detection Mode">
+                    <MudSelectItem Value="true">Webhook (real-time event subscription)</MudSelectItem>
+                    <MudSelectItem Value="false">Polling (checks on the interval set in Settings → Mail Service)</MudSelectItem>
+                </MudSelect>
+                @if (!EditModel.GraphUseWebhook)
+                {
+                    <MudAlert Severity="Severity.Info" Dense="true">
+                        This trigger will poll the mailbox on the global interval instead of registering a webhook subscription.
+                    </MudAlert>
+                }
+            }
 
             @* ── Interactive / EWS ──────────────────────────────────────── *@
             @if (EditModel.MailAuthMode == "Interactive")
@@ -96,17 +122,17 @@
                 }
             }
 
-            @* ── Graph Global credentials ───────────────────────────────── *@
+            @* ── Use Global Setting ──────────────────────────────────────── *@
             @if (EditModel.MailAuthMode == "AppIdGlobal")
             {
                 <MudAlert Severity="Severity.Info" Dense="true">
-                    Credentials are taken from <strong>Settings → Microsoft Graph</strong>.
-                    Make sure Tenant ID, Client ID and Client Secret are configured there.
+                    Follows whatever Authentication Mode is configured in <strong>Settings → Mail</strong> — a
+                    Microsoft Graph option (with its Tenant ID / Client ID / Client Secret or sign-in) or
+                    Interactive / EWS.
                 </MudAlert>
                 <MudTextField T="string" Value="@EditModel.SharedMailBox" ValueChanged="@OnSharedMailBoxChanged"
-                              Label="Mailbox UPN (email address to monitor)"
-                              Required="true"
-                              HelperText="Full email address of the mailbox" />
+                              Label="Shared Mailbox (optional)"
+                              HelperText="Leave empty to use the mailbox configured globally in Settings → Mail" />
             }
 
             @* ── Graph Per-trigger credentials ─────────────────────────── *@
@@ -126,8 +152,27 @@
                               HelperText="Full email address of the mailbox" />
             }
 
+            @* ── Graph Username & Password (ROPC) ────────────────────────── *@
+            @if (EditModel.MailAuthMode == "GraphUsernamePassword")
+            {
+                <MudTextField @bind-Value="EditModel.AzureTenantId"
+                              Label="Azure Tenant ID (leave empty to use global)" />
+                <MudTextField @bind-Value="EditModel.GraphClientId"
+                              Label="Client ID (App ID) (leave empty to use global)" />
+                <MudTextField @bind-Value="EditModel.GraphClientSecret"
+                              Label="Client Secret (optional — only if the app isn't a public client)"
+                              InputType="InputType.Password" />
+                <MudTextField @bind-Value="EditModel.UserName"
+                              Label="Mailbox Username (UPN / email)" Required="true" />
+                <MudTextField @bind-Value="EditModel.Password"
+                              Label="Mailbox Password" Required="true"
+                              InputType="InputType.Password" />
+                <MudTextField T="string" Value="@EditModel.SharedMailBox" ValueChanged="@OnSharedMailBoxChanged"
+                              Label="Shared Mailbox (optional — leave empty to use the username's own mailbox)" />
+            }
+
             @* ── Common fields ──────────────────────────────────────────── *@
-            @if (EditModel.MailAuthMode == "Interactive")
+            @if (EditModel.EffectiveMailAuthMode(_settings) == "Interactive")
             {
                 <MudTextField @bind-Value="EditModel.MailFolder" Label="Mail Folder" Required="true" />
             }
@@ -148,7 +193,7 @@
             <MudTextField @bind-Value="EditModel.To" Label="To Filter" />
             <MudTextField @bind-Value="EditModel.BodyFilterContains" Label="Body Filter Contains" />
 
-            @if (EditModel.MailAuthMode == "Interactive")
+            @if (EditModel.EffectiveMailAuthMode(_settings) == "Interactive")
             {
                 <TagInput @bind-Value="EditModel.AttachmentsType" Label="Attachment Types" Placeholder="e.g. xlsx…" />
             }
@@ -179,6 +224,12 @@
 
     private MudForm _form = default!;
     private bool _saving;
+    private OrchSettings _settings = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        _settings = await SettingsService.GetAsync();
+    }
 
     private bool OAuthTokenIsValid =>
         !string.IsNullOrEmpty(EditModel.OAuthAccessToken) &&
@@ -285,27 +336,43 @@
                     break;
 
                 case "AppIdGlobal":
-                    if (string.IsNullOrWhiteSpace(settings.GraphClientSecret))
+                    switch (settings.GlobalMailAuthMode)
                     {
-                        // No app-only (client_credentials) secret configured -- fall back to the
-                        // delegated global sign-in ("Sign in with Microsoft" in Settings). This only
-                        // reaches mailboxes that signed-in user has delegated access to (their own
-                        // mailbox or shared mailboxes they're a member of), not arbitrary tenant
-                        // mailboxes -- that still requires a real Client Secret.
-                        accessToken = await OAuthService.GetValidGlobalAccessTokenAsync();
-                        if (accessToken == null)
-                        {
-                            Snackbar.Add("Global Graph credentials not configured — either set a Client Secret in Settings → Microsoft Graph, " +
-                                         "or sign in with Microsoft there (only reaches mailboxes you have access to).", Severity.Warning);
+                        case "OAuth2Interactive":
+                            accessToken = await OAuthService.GetValidGlobalAccessTokenAsync();
+                            if (accessToken == null)
+                            {
+                                Snackbar.Add("No valid global sign-in — sign in with Microsoft in Settings → Mail.", Severity.Warning);
+                                return;
+                            }
+                            break;
+
+                        case "GraphUsernamePassword":
+                            if (string.IsNullOrWhiteSpace(settings.GraphUsername) || string.IsNullOrWhiteSpace(settings.GraphPassword))
+                            {
+                                Snackbar.Add("Global Username & Password not configured — set them in Settings → Mail.", Severity.Warning);
+                                return;
+                            }
+                            accessToken = await GraphMailService.GetAccessTokenByPasswordAsync(
+                                settings.GraphTenantId, settings.GraphClientId, settings.GraphClientSecret,
+                                settings.GraphUsername, settings.GraphPassword);
+                            break;
+
+                        case "AppIdGlobal":
+                            if (string.IsNullOrWhiteSpace(settings.GraphClientSecret))
+                            {
+                                Snackbar.Add("Global Client Secret not configured — set it in Settings → Mail.", Severity.Warning);
+                                return;
+                            }
+                            accessToken = await GraphMailService.GetAccessTokenAsync(
+                                settings.GraphTenantId, settings.GraphClientId, settings.GraphClientSecret);
+                            break;
+
+                        default: // "Interactive" (EWS) or "AppIdPerTrigger" — no global Graph method configured
+                            Snackbar.Add("The Global Mail Authentication Mode in Settings has no Microsoft Graph credentials — choose a Graph-based mode there.", Severity.Warning);
                             return;
-                        }
                     }
-                    else
-                    {
-                        accessToken = await GraphMailService.GetAccessTokenAsync(
-                            settings.GraphTenantId, settings.GraphClientId, settings.GraphClientSecret);
-                    }
-                    mailboxUpn = EditModel.SharedMailBox;
+                    mailboxUpn = string.IsNullOrWhiteSpace(EditModel.SharedMailBox) ? settings.GlobalSharedMailBox : EditModel.SharedMailBox;
                     break;
 
                 case "AppIdPerTrigger":
@@ -317,6 +384,25 @@
                     accessToken = await GraphMailService.GetAccessTokenAsync(
                         EditModel.AzureTenantId, EditModel.GraphClientId, EditModel.GraphClientSecret);
                     mailboxUpn = EditModel.SharedMailBox;
+                    break;
+
+                case "GraphUsernamePassword":
+                    if (string.IsNullOrWhiteSpace(EditModel.UserName) || string.IsNullOrWhiteSpace(EditModel.Password))
+                    {
+                        Snackbar.Add("Enter the mailbox Username and Password above first.", Severity.Warning);
+                        return;
+                    }
+                    var ropcTenantId = !string.IsNullOrWhiteSpace(EditModel.AzureTenantId) ? EditModel.AzureTenantId : settings.GraphTenantId;
+                    var ropcClientId = !string.IsNullOrWhiteSpace(EditModel.GraphClientId) ? EditModel.GraphClientId : settings.GraphClientId;
+                    var ropcClientSecret = !string.IsNullOrWhiteSpace(EditModel.GraphClientSecret) ? EditModel.GraphClientSecret : settings.GraphClientSecret;
+                    if (string.IsNullOrWhiteSpace(ropcTenantId) || string.IsNullOrWhiteSpace(ropcClientId))
+                    {
+                        Snackbar.Add("Tenant ID / Client ID not configured (per-trigger above, or globally in Settings → Mail).", Severity.Warning);
+                        return;
+                    }
+                    accessToken = await GraphMailService.GetAccessTokenByPasswordAsync(
+                        ropcTenantId, ropcClientId, ropcClientSecret, EditModel.UserName, EditModel.Password);
+                    mailboxUpn = string.IsNullOrWhiteSpace(EditModel.SharedMailBox) ? EditModel.UserName : EditModel.SharedMailBox;
                     break;
             }
         }

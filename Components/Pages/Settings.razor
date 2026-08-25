@@ -71,91 +71,162 @@ else
 
             <MudItem xs="12">
                 <MudDivider Class="my-3" />
-                <MudText Typo="Typo.h6" Class="mb-2">Microsoft Graph / Webhooks</MudText>
+                <MudText Typo="Typo.h6" Class="mb-2">Mail</MudText>
             </MudItem>
-            <MudItem xs="12" md="8">
-                <MudTextField @bind-Value="_settings.PublicBaseUrl"
-                              Label="Public Base URL"
-                              HelperText="Public HTTPS URL of this server (e.g. https://supertrigger.company.com) — required for Graph webhooks" />
-            </MudItem>
-            <AuthorizeView Roles="Admin">
-            <MudItem xs="12" md="4" Class="d-flex align-end pb-2 gap-2">
-                <MudTooltip Text="Auto-detect ngrok tunnel — run 'ngrok http 5200' first">
-                    <MudButton Variant="Variant.Outlined"
-                               Color="Color.Secondary"
-                               StartIcon="@Icons.Material.Filled.NetworkCheck"
-                               OnClick="DetectNgrokAsync"
-                               Disabled="_detectingNgrok">
-                        @if (_detectingNgrok)
-                        {
-                            <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" />
-                        }
-                        Detect ngrok
-                    </MudButton>
-                </MudTooltip>
-            </MudItem>
-            </AuthorizeView>
             <MudItem xs="12">
-                <MudText Typo="Typo.subtitle2" Class="mb-1">Global App ID + Secret (used when trigger is set to &quot;Global&quot;)</MudText>
+                <MudSelect T="string" @bind-Value="_settings.GlobalMailAuthMode" Label="Authentication Mode" Required="true">
+                    <MudSelectItem Value="@("Interactive")">Interactive / EWS (Exchange)</MudSelectItem>
+                    <MudSelectItem Value="@("OAuth2Interactive")">Microsoft Graph — Interactive Sign-in (OAuth2)</MudSelectItem>
+                    <MudSelectItem Value="@("AppIdGlobal")">Microsoft Graph — App ID + Client Secret</MudSelectItem>
+                    <MudSelectItem Value="@("GraphUsernamePassword")">Microsoft Graph — Username &amp; Password</MudSelectItem>
+                </MudSelect>
             </MudItem>
-            <MudItem xs="12" md="4">
-                <MudTextField @bind-Value="_settings.GraphTenantId" Label="Tenant ID" />
-            </MudItem>
-            <MudItem xs="12" md="4">
-                <MudTextField @bind-Value="_settings.GraphClientId" Label="Client ID (App ID)" />
-            </MudItem>
-            <MudItem xs="12" md="4">
-                <MudTextField @bind-Value="_graphClientSecretInput"
-                              Label="Client Secret"
-                              InputType="InputType.Password"
-                              HelperText="Leave empty to keep the currently saved value" />
+            <MudItem xs="12" md="6">
+                <MudTextField @bind-Value="_settings.GlobalSharedMailBox"
+                              Label="Shared Mailbox (optional)"
+                              HelperText="Used by mail triggers set to 'Use Global Setting' that don't specify their own mailbox" />
             </MudItem>
 
-            @* ── Global OAuth2 interactive login ────────────────────────── *@
-            <MudItem xs="12">
-                <MudText Typo="Typo.subtitle2" Class="mb-1">Global Interactive Sign-in (OAuth2 delegated)</MudText>
-                <MudText Typo="Typo.caption" Class="mb-2">
-                    Sign in once here to allow folder browsing and polling without per-trigger credentials.
-                </MudText>
-            </MudItem>
-            <MudItem xs="12">
-                @if (_settings != null && !string.IsNullOrEmpty(_settings.OAuthGlobalAccessToken) &&
-                     _settings.OAuthGlobalTokenExpiry.HasValue && DateTime.UtcNow < _settings.OAuthGlobalTokenExpiry.Value)
-                {
-                    <MudAlert Severity="Severity.Success" Dense="true" Icon="@Icons.Material.Filled.CheckCircle" Class="mb-2">
-                        Signed in
-                        @if (!string.IsNullOrEmpty(_settings!.OAuthGlobalUserUpn))
-                        {
-                            <span> as <strong>@_settings.OAuthGlobalUserUpn</strong></span>
-                        }
-                        &nbsp;·&nbsp; valid until @_settings!.OAuthGlobalTokenExpiry!.Value.ToLocalTime().ToString("HH:mm dd/MM")
-                    </MudAlert>
-                    <AuthorizeView Roles="Admin">
-                        <MudButton Variant="Variant.Outlined" Color="Color.Warning"
-                                   StartIcon="@Icons.Material.Filled.Refresh"
-                                   OnClick="GlobalSignInAsync" Disabled="_signingIn">
-                            Re-authenticate
-                        </MudButton>
-                    </AuthorizeView>
-                }
-                else
-                {
-                    @if (_settings != null && !string.IsNullOrEmpty(_settings.OAuthGlobalAccessToken))
+            @* ── Interactive / EWS ─────────────────────────────────────────── *@
+            @if (_settings.GlobalMailAuthMode == "Interactive")
+            {
+                <MudItem xs="12" md="6">
+                    <MudTextField @bind-Value="_settings.MailServerURL" Label="Exchange (EWS) Mail Server URL" />
+                </MudItem>
+                <MudItem xs="12" md="6">
+                    <MudTextField @bind-Value="_settings.MailServerVersion" Label="Exchange Server Version (e.g. Exchange2016)" />
+                </MudItem>
+            }
+
+            @* ── Shared Graph app registration fields ────────────────────────
+                 Tenant ID / Client ID are used by all three Graph modes below (client credentials,
+                 interactive sign-in and username/password); Client Secret is required only for
+                 App ID + Client Secret and optional for the other two. *@
+            @if (IsGlobalGraphAppMode)
+            {
+                <MudItem xs="12" md="4">
+                    <MudTextField @bind-Value="_settings.GraphTenantId" Label="Tenant ID" />
+                </MudItem>
+                <MudItem xs="12" md="4">
+                    <MudTextField @bind-Value="_settings.GraphClientId" Label="Client ID (App ID)" />
+                </MudItem>
+                <MudItem xs="12" md="4">
+                    <MudTextField @bind-Value="_graphClientSecretInput"
+                                  Label="Client Secret"
+                                  InputType="InputType.Password"
+                                  HelperText="@(_settings.GlobalMailAuthMode == "AppIdGlobal" ? "Required. Leave empty to keep the currently saved value" : "Optional — only if the app isn't a public client. Leave empty to keep the currently saved value")" />
+                </MudItem>
+            }
+
+            @* ── Username & Password (ROPC) ──────────────────────────────────── *@
+            @if (_settings.GlobalMailAuthMode == "GraphUsernamePassword")
+            {
+                <MudItem xs="12" md="6">
+                    <MudTextField @bind-Value="_settings.GraphUsername" Label="Mailbox Username (UPN / email)" />
+                </MudItem>
+                <MudItem xs="12" md="6">
+                    <MudTextField @bind-Value="_graphPasswordInput"
+                                  Label="Mailbox Password"
+                                  InputType="InputType.Password"
+                                  HelperText="Leave empty to keep the currently saved value" />
+                </MudItem>
+            }
+
+            @* ── OAuth2 interactive sign-in ───────────────────────────────────── *@
+            @if (_settings.GlobalMailAuthMode == "OAuth2Interactive")
+            {
+                <MudItem xs="12">
+                    <MudText Typo="Typo.caption" Class="mb-2">
+                        Sign in once here to allow folder browsing and polling without per-trigger credentials.
+                    </MudText>
+                </MudItem>
+                <MudItem xs="12">
+                    @if (_settings != null && !string.IsNullOrEmpty(_settings.OAuthGlobalAccessToken) &&
+                         _settings.OAuthGlobalTokenExpiry.HasValue && DateTime.UtcNow < _settings.OAuthGlobalTokenExpiry.Value)
                     {
-                        <MudAlert Severity="Severity.Warning" Dense="true" Class="mb-2">
-                            Global token expired — please re-authenticate.
+                        <MudAlert Severity="Severity.Success" Dense="true" Icon="@Icons.Material.Filled.CheckCircle" Class="mb-2">
+                            Signed in
+                            @if (!string.IsNullOrEmpty(_settings!.OAuthGlobalUserUpn))
+                            {
+                                <span> as <strong>@_settings.OAuthGlobalUserUpn</strong></span>
+                            }
+                            &nbsp;·&nbsp; valid until @_settings!.OAuthGlobalTokenExpiry!.Value.ToLocalTime().ToString("HH:mm dd/MM")
                         </MudAlert>
+                        <AuthorizeView Roles="Admin">
+                            <MudButton Variant="Variant.Outlined" Color="Color.Warning"
+                                       StartIcon="@Icons.Material.Filled.Refresh"
+                                       OnClick="GlobalSignInAsync" Disabled="_signingIn">
+                                Re-authenticate
+                            </MudButton>
+                        </AuthorizeView>
                     }
+                    else
+                    {
+                        @if (_settings != null && !string.IsNullOrEmpty(_settings.OAuthGlobalAccessToken))
+                        {
+                            <MudAlert Severity="Severity.Warning" Dense="true" Class="mb-2">
+                                Global token expired — please re-authenticate.
+                            </MudAlert>
+                        }
+                        <AuthorizeView Roles="Admin">
+                            <MudButton Variant="Variant.Filled" Color="Color.Primary"
+                                       StartIcon="@Icons.Material.Filled.Login"
+                                       OnClick="GlobalSignInAsync" Disabled="_signingIn">
+                                @if (_signingIn) { <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" /> }
+                                Sign in with Microsoft
+                            </MudButton>
+                        </AuthorizeView>
+                    }
+                </MudItem>
+            }
+
+            @* ── Detection Mode (any Graph mode) — also the default for new triggers ──── *@
+            @if (IsGlobalGraphMode)
+            {
+                <MudItem xs="12" md="6">
+                    <MudSelect T="string" @bind-Value="_settings.GraphDetectionMode"
+                               Label="Detection Mode"
+                               HelperText="Also used as the default when creating a new mail trigger">
+                        <MudSelectItem Value="@("Webhook")">Webhook (real-time event subscription)</MudSelectItem>
+                        <MudSelectItem Value="@("Polling")">Polling</MudSelectItem>
+                    </MudSelect>
+                </MudItem>
+
+                @if (_settings.GraphDetectionMode == "Webhook")
+                {
+                    <MudItem xs="12" md="6">
+                        <MudTextField @bind-Value="_settings.PublicBaseUrl"
+                                      Label="Public Base URL"
+                                      HelperText="Public HTTPS URL of this server (e.g. https://supertrigger.company.com) — required for Graph webhooks" />
+                    </MudItem>
                     <AuthorizeView Roles="Admin">
-                        <MudButton Variant="Variant.Filled" Color="Color.Primary"
-                                   StartIcon="@Icons.Material.Filled.Login"
-                                   OnClick="GlobalSignInAsync" Disabled="_signingIn">
-                            @if (_signingIn) { <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" /> }
-                            Sign in with Microsoft
-                        </MudButton>
+                    <MudItem xs="12" Class="d-flex gap-2">
+                        <MudTooltip Text="Auto-detect ngrok tunnel — run 'ngrok http 5200' first">
+                            <MudButton Variant="Variant.Outlined"
+                                       Color="Color.Secondary"
+                                       StartIcon="@Icons.Material.Filled.NetworkCheck"
+                                       OnClick="DetectNgrokAsync"
+                                       Disabled="_detectingNgrok">
+                                @if (_detectingNgrok)
+                                {
+                                    <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" />
+                                }
+                                Detect ngrok
+                            </MudButton>
+                        </MudTooltip>
+                    </MudItem>
                     </AuthorizeView>
                 }
-            </MudItem>
+            }
+
+            @* ── Interval — EWS always polls; Graph modes only when Detection Mode = Polling ──── *@
+            @if (_settings.GlobalMailAuthMode == "Interactive" || (IsGlobalGraphMode && _settings.GraphDetectionMode == "Polling"))
+            {
+                <MudItem xs="12" md="4">
+                    <MudNumericField @bind-Value="_settings.MailTriggerIntervalInSeconds"
+                                     Label="Mail Poll Interval (seconds)" Min="5" Max="3600" />
+                </MudItem>
+            }
 
             <MudItem xs="12">
                 <MudDivider Class="my-3" />
@@ -178,17 +249,10 @@ else
 
             <MudItem xs="12">
                 <MudDivider Class="my-3" />
-                <MudText Typo="Typo.h6" Class="mb-2">Mail Service (EWS polling)</MudText>
-            </MudItem>
-            <MudItem xs="12" md="6">
-                <MudTextField @bind-Value="_settings.MailServerURL" Label="Mail Server URL" />
-            </MudItem>
-            <MudItem xs="12" md="6">
-                <MudTextField @bind-Value="_settings.MailServerVersion" Label="Exchange Server Version (e.g. Exchange2016)" />
-            </MudItem>
-            <MudItem xs="12" md="4">
-                <MudNumericField @bind-Value="_settings.MailTriggerIntervalInMinutes"
-                                 Label="Mail Poll Interval (minutes)" Min="1" Max="60" />
+                <MudText Typo="Typo.h6" Class="mb-2">File Watching</MudText>
+                <MudText Typo="Typo.caption" Class="mb-2">
+                    Debounce for the file-system watcher used by File Triggers, to avoid duplicate events for the same file.
+                </MudText>
             </MudItem>
             <MudItem xs="12" md="4">
                 <MudNumericField @bind-Value="_settings.SameFileIntervalInSeconds"
@@ -229,9 +293,18 @@ else
     // overwrites the real value in _settings if the admin actually typed something here.
     private string _passwordInput = "";
     private string _graphClientSecretInput = "";
+    private string _graphPasswordInput = "";
     private string _adPasswordInput = "";
 
     private OrchSettings? _original;
+
+    // Modes that share the Tenant ID / Client ID / Client Secret fields.
+    private bool IsGlobalGraphAppMode =>
+        _settings?.GlobalMailAuthMode is "OAuth2Interactive" or "AppIdGlobal" or "GraphUsernamePassword";
+
+    // Any Microsoft Graph mode — these get a Detection Mode choice.
+    private bool IsGlobalGraphMode =>
+        _settings?.GlobalMailAuthMode is "OAuth2Interactive" or "AppIdGlobal" or "GraphUsernamePassword";
 
     protected override async Task OnInitializedAsync()
     {
@@ -260,6 +333,7 @@ else
     {
         if (!string.IsNullOrEmpty(_passwordInput)) _settings!.Password = _passwordInput;
         if (!string.IsNullOrEmpty(_graphClientSecretInput)) _settings!.GraphClientSecret = _graphClientSecretInput;
+        if (!string.IsNullOrEmpty(_graphPasswordInput)) _settings!.GraphPassword = _graphPasswordInput;
         if (!string.IsNullOrEmpty(_adPasswordInput)) _settings!.AdPassword = _adPasswordInput;
     }
 
@@ -290,7 +364,7 @@ else
 
         var changedFields = GetChangedFields(_original!, _settings!);
         await SettingsService.SaveAsync(_settings!);
-        _passwordInput = _graphClientSecretInput = _adPasswordInput = "";
+        _passwordInput = _graphClientSecretInput = _graphPasswordInput = _adPasswordInput = "";
 
         if (changedFields.Count > 0)
         {
@@ -361,7 +435,7 @@ else
             // Save current settings first so Client ID is persisted
             ApplyPendingSecrets();
             await SettingsService.SaveAsync(_settings!);
-            _passwordInput = _graphClientSecretInput = _adPasswordInput = "";
+            _passwordInput = _graphClientSecretInput = _graphPasswordInput = _adPasswordInput = "";
 
             var baseUri = !string.IsNullOrWhiteSpace(_settings.PublicBaseUrl)
                 ? _settings.PublicBaseUrl.TrimEnd('/')

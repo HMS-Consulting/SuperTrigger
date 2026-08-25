@@ -18,6 +18,12 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     protected override void OnModelCreating(ModelBuilder mb)
     {
         mb.Entity<OrchSettings>().HasData(new OrchSettings { Id = 1 });
+
+        // The length matters on SQL Server only: an unbounded string maps to nvarchar(max), which
+        // cannot be an index key column. SQLite ignores it (its TEXT columns are unbounded either
+        // way), so existing SQLite databases are unaffected.
+        mb.Entity<MailTrigger>().Property(e => e.TriggerName).HasMaxLength(256);
+        mb.Entity<FileTrigger>().Property(e => e.TriggerName).HasMaxLength(256);
         mb.Entity<MailTrigger>().HasIndex(e => e.TriggerName).IsUnique();
         mb.Entity<FileTrigger>().HasIndex(e => e.TriggerName).IsUnique();
 

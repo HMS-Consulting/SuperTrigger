@@ -48,6 +48,21 @@ public class MailTrigger : IFolderTrigger
     public string? GraphSubscriptionId { get; set; }
     public DateTime? GraphSubscriptionExpiry { get; set; }
 
-    public bool UsesWebhook =>
-        MailAuthMode == "AppIdGlobal" || MailAuthMode == "AppIdPerTrigger" || MailAuthMode == "OAuth2Interactive";
+    // When true (default), Graph triggers listen for changes via a registered webhook subscription.
+    // When false, Graph triggers poll on the same interval as Exchange (Settings → Mail Poll Interval).
+    public bool GraphUseWebhook { get; set; } = true;
+
+    // "AppIdGlobal" means "use whatever is configured in Settings → Mail" — resolve it to the
+    // actual mode (Graph or Interactive/EWS) that's live there right now.
+    public string EffectiveMailAuthMode(OrchSettings settings) =>
+        MailAuthMode == "AppIdGlobal" ? settings.GlobalMailAuthMode : MailAuthMode;
+
+    public bool IsGraphMode(OrchSettings settings) =>
+        EffectiveMailAuthMode(settings) is "AppIdGlobal" or "AppIdPerTrigger" or "OAuth2Interactive" or "GraphUsernamePassword";
+
+    // "AppIdGlobal" triggers don't get their own Detection Mode choice — they follow the global
+    // one (Settings → Mail → Detection Mode) instead of the per-trigger GraphUseWebhook flag.
+    public bool UsesWebhook(OrchSettings settings) =>
+        IsGraphMode(settings) &&
+        (MailAuthMode == "AppIdGlobal" ? settings.GraphDetectionMode == "Webhook" : GraphUseWebhook);
 }

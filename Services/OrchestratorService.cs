@@ -148,10 +148,15 @@ public class OrchestratorService(
     private async Task<string> AuthenticateExternalAppAsync(OrchSettings settings)
     {
         var client = CreateClient(settings);
-        var baseUri = new Uri(settings.OrchestratorURL);
-        var identityUrl = baseUri.Host.Equals("cloud.uipath.com", StringComparison.OrdinalIgnoreCase)
-            ? "https://cloud.uipath.com/identity_/connect/token"
-            : $"{baseUri.Scheme}://{baseUri.Host}/identity/connect/token";
+        var baseUri = new Uri(settings.OrchestratorURL.TrimEnd('/'));
+        string identityUrl;
+        
+        if(baseUri.Host.Equals("cloud.uipath.com", StringComparison.OrdinalIgnoreCase))
+            identityUrl = "https://cloud.uipath.com/identity_/connect/token";
+        else if (baseUri.ToString().EndsWith("orchestrator_", StringComparison.OrdinalIgnoreCase))
+            identityUrl = $"{baseUri.ToString().ToLower().Replace("orchestrator_","identity_")}/connect/token";
+        else
+            identityUrl = $"{baseUri.Scheme}://{baseUri.Host}/identity/connect/token";
 
         var scopes = string.Join(" ",
             settings.ExternalAppScopes.Split(new[] { ',', ' ' }, StringSplitOptions.RemoveEmptyEntries));

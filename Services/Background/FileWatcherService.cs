@@ -19,11 +19,27 @@ public class FileWatcherService(
     ILogger<FileWatcherService> logger) : BackgroundService
 {
     private readonly List<WatcherEntry> _watchers = [];
+    private readonly object _watchersLock = new();
     private readonly Dictionary<string, DateTime> _fileHistory = [];
     private readonly object _historyLock = new();
     private int _sameFileInterval = 20;
 
-    private record WatcherEntry(FileSystemWatcher Watcher, FileTrigger Trigger);
+    private const int HealthCheckIntervalSeconds = 15;
+    private const int BaseRetrySeconds = 15;
+    private const int MaxRetrySeconds = 300;
+    private const int MaxRescanFiles = 500;
+
+    private sealed class WatcherEntry(FileTrigger trigger, string filter)
+    {
+        public FileTrigger Trigger { get; } = trigger;
+        public string Filter { get; } = filter;
+        public FileSystemWatcher? Watcher { get; set; }
+        public bool Healthy { get; set; }
+        public bool Disposed { get; set; }
+        public int FailureCount { get; set; }
+        public DateTime NextRetry { get; set; } = DateTime.MinValue;
+        public DateTime? DownSince { get; set; }
+    }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -31,6 +47,7 @@ public class FileWatcherService(
         await LoadWatchersAsync();
 
         _ = Task.Run(() => CleanFileHistoryLoop(stoppingToken), stoppingToken);
+        _ = Task.Run(() => WatcherHealthLoop(stoppingToken), stoppingToken);
 
         await foreach (var _ in reloadChannel.Subscribe().ReadAllAsync(stoppingToken))
         {
@@ -56,40 +73,193 @@ public class FileWatcherService(
                 var extensions = trigger.FileTypes.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
                 foreach (var ext in extensions)
                 {
-                    try
-                    {
-                        var namePattern = trigger.FileNameMatchMode == "Equals"
-                            ? trigger.FileNameContains
-                            : "*" + trigger.FileNameContains + "*";
-                        var filter = namePattern + "." + ext.TrimStart('.');
-                        var watcher = CreateWatcher(trigger.FolderPath, filter, trigger.WatcherUsername, trigger.WatcherPassword);
+                    var namePattern = trigger.FileNameMatchMode == "Equals"
+                        ? trigger.FileNameContains
+                        : "*" + trigger.FileNameContains + "*";
+                    var filter = namePattern + "." + ext.TrimStart('.');
 
-                        watcher.Created += (s, e) => OnFileEvent(e.FullPath, trigger);
-                        watcher.Renamed += (s, e) =>
-                        {
-                            if (Regex.IsMatch(e.Name ?? "", WildCardToRegular(filter)))
-                                OnFileEvent(e.FullPath, trigger);
-                        };
-                        watcher.Error += (s, e) =>
-                        {
-                            logger.LogError("Watcher error for trigger {Name}: {Error}", trigger.TriggerName, e.GetException().Message);
-                            watcher.EnableRaisingEvents = false;
-                        };
+                    var entry = new WatcherEntry(trigger, filter);
+                    lock (_watchersLock) _watchers.Add(entry);
 
-                        _watchers.Add(new WatcherEntry(watcher, trigger));
-                        var userInfo = string.IsNullOrEmpty(trigger.WatcherUsername) ? "app account" : trigger.WatcherUsername;
-                        logger.LogInformation("Watching: {Path} | Filter: {Filter} | User: {User}", trigger.FolderPath, filter, userInfo);
-                    }
-                    catch (Exception ex)
-                    {
-                        logger.LogError(ex, "Failed to create watcher for trigger {Name}", trigger.TriggerName);
-                    }
+                    // A failure here is not fatal: the entry stays registered and the
+                    // health loop keeps retrying until the folder becomes reachable.
+                    TryStartWatcher(entry);
                 }
             }
         }
         catch (Exception ex)
         {
             logger.LogError(ex, "Failed to load file watchers");
+        }
+    }
+
+    private bool TryStartWatcher(WatcherEntry entry)
+    {
+        var trigger = entry.Trigger;
+        try
+        {
+            var watcher = CreateWatcher(trigger.FolderPath, entry.Filter, trigger.WatcherUsername, trigger.WatcherPassword);
+
+            watcher.Created += (s, e) => OnFileEvent(e.FullPath, trigger);
+            watcher.Renamed += (s, e) =>
+            {
+                if (Regex.IsMatch(e.Name ?? "", WildCardToRegular(entry.Filter)))
+                    OnFileEvent(e.FullPath, trigger);
+            };
+            watcher.Error += (s, e) =>
+                MarkUnhealthy(entry, e.GetException().Message);
+
+            entry.Watcher = watcher;
+            entry.Healthy = true;
+            entry.NextRetry = DateTime.MinValue;
+
+            var userInfo = string.IsNullOrEmpty(trigger.WatcherUsername) ? "app account" : trigger.WatcherUsername;
+            if (entry.FailureCount > 0)
+                logger.LogInformation("Watcher recovered after {Attempts} failed attempt(s): {Path} | Filter: {Filter}",
+                    entry.FailureCount, trigger.FolderPath, entry.Filter);
+            else
+                logger.LogInformation("Watching: {Path} | Filter: {Filter} | User: {User}", trigger.FolderPath, entry.Filter, userInfo);
+
+            entry.FailureCount = 0;
+
+            // Files dropped while the watcher was down never raised an event - pick them up now.
+            if (entry.DownSince is { } downSince)
+            {
+                var since = downSince;
+                entry.DownSince = null;
+                _ = Task.Run(() => RescanMissedFiles(entry, since));
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            entry.Healthy = false;
+            entry.Watcher = null;
+            entry.DownSince ??= DateTime.Now;
+            entry.FailureCount++;
+            ScheduleRetry(entry);
+
+            // Log the first failures loudly, then throttle to avoid flooding the log
+            // while a share stays offline for hours.
+            if (entry.FailureCount <= 3 || entry.FailureCount % 20 == 0)
+                logger.LogError(ex, "Failed to create watcher for trigger {Name} on {Path} (attempt {Attempt}); retrying in {Delay}s",
+                    trigger.TriggerName, trigger.FolderPath, entry.FailureCount, (int)(entry.NextRetry - DateTime.Now).TotalSeconds);
+            else
+                logger.LogDebug("Watcher for trigger {Name} still unavailable (attempt {Attempt})", trigger.TriggerName, entry.FailureCount);
+
+            return false;
+        }
+    }
+
+    private void MarkUnhealthy(WatcherEntry entry, string reason)
+    {
+        if (entry.Disposed) return;
+
+        var wasHealthy = entry.Healthy;
+        entry.Healthy = false;
+        entry.DownSince ??= DateTime.Now;
+        entry.FailureCount++;
+        ScheduleRetry(entry);
+
+        try { entry.Watcher?.Dispose(); } catch { /* already gone */ }
+        entry.Watcher = null;
+
+        if (wasHealthy)
+            logger.LogError("Watcher for trigger {Name} on {Path} stopped: {Reason}. Retrying in {Delay}s",
+                entry.Trigger.TriggerName, entry.Trigger.FolderPath, reason, (int)(entry.NextRetry - DateTime.Now).TotalSeconds);
+    }
+
+    private static void ScheduleRetry(WatcherEntry entry)
+    {
+        var delay = Math.Min(MaxRetrySeconds, BaseRetrySeconds * Math.Pow(2, Math.Min(entry.FailureCount - 1, 10)));
+        entry.NextRetry = DateTime.Now.AddSeconds(delay);
+    }
+
+    /// <summary>
+    /// Periodically verifies every watcher is alive and the folder is still reachable,
+    /// and restarts the ones that are down. Covers both creation failures and watchers
+    /// that die later (share disconnected, permissions revoked, buffer overflow).
+    /// </summary>
+    private async Task WatcherHealthLoop(CancellationToken ct)
+    {
+        while (!ct.IsCancellationRequested)
+        {
+            try { await Task.Delay(TimeSpan.FromSeconds(HealthCheckIntervalSeconds), ct); }
+            catch (OperationCanceledException) { return; }
+
+            WatcherEntry[] snapshot;
+            lock (_watchersLock) snapshot = [.. _watchers];
+
+            foreach (var entry in snapshot)
+            {
+                if (ct.IsCancellationRequested) return;
+                if (entry.Disposed) continue;
+
+                try
+                {
+                    if (entry.Healthy)
+                    {
+                        // A dropped network share often does not raise Error - probe the folder.
+                        if (entry.Watcher is { EnableRaisingEvents: true } && IsFolderAccessible(entry))
+                            continue;
+
+                        MarkUnhealthy(entry, "folder is no longer accessible or the watcher stopped raising events");
+                    }
+
+                    if (DateTime.Now >= entry.NextRetry)
+                        TryStartWatcher(entry);
+                }
+                catch (Exception ex)
+                {
+                    logger.LogError(ex, "Health check failed for trigger {Name}", entry.Trigger.TriggerName);
+                }
+            }
+        }
+    }
+
+    private bool IsFolderAccessible(WatcherEntry entry)
+    {
+        try
+        {
+            return RunAs(entry.Trigger.WatcherUsername, entry.Trigger.WatcherPassword,
+                () => Directory.Exists(entry.Trigger.FolderPath));
+        }
+        catch (Exception ex)
+        {
+            logger.LogDebug(ex, "Folder probe failed for {Path}", entry.Trigger.FolderPath);
+            return false;
+        }
+    }
+
+    private void RescanMissedFiles(WatcherEntry entry, DateTime downSince)
+    {
+        try
+        {
+            var files = RunAs(entry.Trigger.WatcherUsername, entry.Trigger.WatcherPassword, () =>
+                Directory.EnumerateFiles(entry.Trigger.FolderPath, entry.Filter, SearchOption.TopDirectoryOnly)
+                    .Where(f => File.GetLastWriteTime(f) >= downSince || File.GetCreationTime(f) >= downSince)
+                    .Take(MaxRescanFiles + 1)
+                    .ToList());
+
+            if (files.Count == 0) return;
+
+            if (files.Count > MaxRescanFiles)
+            {
+                files = files.Take(MaxRescanFiles).ToList();
+                logger.LogWarning("More than {Max} files were added to {Path} while the watcher was down; only the first {Max} are processed",
+                    MaxRescanFiles, entry.Trigger.FolderPath, MaxRescanFiles);
+            }
+
+            logger.LogInformation("Recovering {Count} file(s) created in {Path} while the watcher was down (since {Since})",
+                files.Count, entry.Trigger.FolderPath, downSince);
+
+            foreach (var file in files)
+                OnFileEvent(file, entry.Trigger);
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Failed to rescan {Path} after watcher recovery", entry.Trigger.FolderPath);
         }
     }
 
@@ -176,7 +346,9 @@ public class FileWatcherService(
     {
         while (!ct.IsCancellationRequested)
         {
-            await Task.Delay(TimeSpan.FromSeconds(_sameFileInterval), ct);
+            try { await Task.Delay(TimeSpan.FromSeconds(_sameFileInterval), ct); }
+            catch (OperationCanceledException) { return; }
+
             lock (_historyLock)
             {
                 var cutoff = DateTime.Now.AddSeconds(-_sameFileInterval);
@@ -188,9 +360,17 @@ public class FileWatcherService(
 
     private void DisposeWatchers()
     {
-        foreach (var entry in _watchers)
-            entry.Watcher.Dispose();
-        _watchers.Clear();
+        lock (_watchersLock)
+        {
+            foreach (var entry in _watchers)
+            {
+                entry.Disposed = true;
+                entry.Healthy = false;
+                try { entry.Watcher?.Dispose(); } catch { /* ignore */ }
+                entry.Watcher = null;
+            }
+            _watchers.Clear();
+        }
     }
 
     public override void Dispose()
@@ -199,10 +379,14 @@ public class FileWatcherService(
         base.Dispose();
     }
 
-    private FileSystemWatcher CreateWatcher(string path, string filter, string? username, string? password)
+    private FileSystemWatcher CreateWatcher(string path, string filter, string? username, string? password) =>
+        RunAs(username, password, () => BuildWatcher(path, filter));
+
+    /// <summary>Runs <paramref name="action"/> impersonating the trigger credentials, if any.</summary>
+    private static T RunAs<T>(string? username, string? password, Func<T> action)
     {
         if (string.IsNullOrEmpty(username) || string.IsNullOrEmpty(password))
-            return BuildWatcher(path, filter);
+            return action();
 
         string domain, user;
         if (username.Contains('\\'))
@@ -229,9 +413,9 @@ public class FileWatcherService(
         try
         {
             using var identity = new WindowsIdentity(token);
-            FileSystemWatcher? watcher = null;
-            WindowsIdentity.RunImpersonated(identity.AccessToken, () => watcher = BuildWatcher(path, filter));
-            return watcher!;
+            T result = default!;
+            WindowsIdentity.RunImpersonated(identity.AccessToken, () => result = action());
+            return result;
         }
         finally
         {
