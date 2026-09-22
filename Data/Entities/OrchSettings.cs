@@ -57,4 +57,11 @@ public class OrchSettings
 
     // Retention policy for Logs / Audit Logs (days to keep before deletion)
     public int RetentionDays { get; set; } = 14;
+
+    // Global detection method for File Triggers ("FileSystemWatcher" | "Polling"). Always global —
+    // there is no per-trigger override. Default preserves existing behavior for upgrades.
+    public string FileWatchMethod { get; set; } = "FileSystemWatcher";
+
+    // Sampling interval (seconds) used when FileWatchMethod = "Polling".
+    public int FilePollingIntervalInSeconds { get; set; } = 30;
 }

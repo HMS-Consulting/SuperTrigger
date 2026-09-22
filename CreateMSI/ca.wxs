@@ -1,0 +1,75 @@
+<Wix xmlns='http://schemas.microsoft.com/wix/2006/wi'>
+	<Fragment>
+		<!-- Immediate: run in the UI sequence to drive the AppPoolIdentityDlg / SslCertDlg dialogs -->
+		<CustomAction Id='EnumerateCertificates' BinaryKey='CustomActionsWeb' DllEntry='EnumerateCertificates' Execute='immediate'
+					  Return='check'/>
+
+		<CustomAction Id='GenerateSelfSignedCertificate' BinaryKey='CustomActionsWeb' DllEntry='GenerateSelfSignedCertificate' Execute='immediate'
+					  Return='check'/>
+
+		<!-- Immediate: sets RUNTIMESMISSING by looking at %ProgramW6432%\dotnet\shared, so the wizard can
+		     show PrerequisitesDlg when the .NET 8 runtimes are absent. The authored ANCMV2PATH file
+		     search can't do this on its own: an older Hosting Bundle (6.0/7.0) leaves aspnetcorev2.dll
+		     behind, and Microsoft.WindowsDesktop.App isn't part of any Hosting Bundle at all. -->
+		<CustomAction Id='DetectPrerequisites' BinaryKey='CustomActionsWeb' DllEntry='DetectPrerequisites' Execute='immediate'
+					  Return='check'/>
+
+		<!-- Immediate: copies the previous install's appsettings.json aside (it is deleted by
+		     RemoveExistingProducts) and prefills the database dialogs from it, so an upgrade keeps
+		     using the same database unless the admin changes it. -->
+		<CustomAction Id='ReadExistingDbConfig' BinaryKey='CustomActionsWeb' DllEntry='ReadExistingDbConfig' Execute='immediate'
+					  Return='check'/>
+
+		<!-- Immediate: run from the "Test Connection" button on SqlServerDlg. Return='ignore' because
+		     a failed connection test reports itself and must not abort the install. -->
+		<CustomAction Id='TestSqlConnection' BinaryKey='CustomActionsWeb' DllEntry='TestSqlConnection' Execute='immediate'
+					  Return='ignore'/>
+
+		<!-- Immediate: writes the database setup request (including the DPAPI-encrypted SQL password)
+		     and points the deferred action below at it via CustomActionData. A deferred action can't
+		     read properties itself, and the authored CustomAction.Target template has a 255-char
+		     limit, so the whole configuration goes through the file, not through the template. -->
+		<CustomAction Id='PrepareDbSetupRequest' BinaryKey='CustomActionsWeb' DllEntry='PrepareDbSetupRequest' Execute='immediate'
+					  Return='check'/>
+
+		<!-- Deferred: runs the newly-installed app's own "setup-db" CLI mode, which creates/upgrades
+		     the chosen database (SQLite file or SQL Server), optionally carries the previous
+		     database's data over, and records it all in appsettings.json, so the app itself never has
+		     to create/migrate its schema at startup. -->
+		<CustomAction Id='SetupDatabase' BinaryKey='CustomActionsWeb' DllEntry='SetupDatabase' Execute='deferred'
+					  Return='check' Impersonate='no'/>
+
+		<!-- Deferred: enable IIS (DISM) and/or download+install the ASP.NET Core Hosting Bundle, if
+		     missing and the user consented via PrerequisitesDlg. Runs before any IIS configuration. -->
+		<CustomAction Id='SetEnsurePrerequisitesData' Property='EnsurePrerequisites'
+					  Value='INSTALLIIS=[INSTALLIIS];HOSTINGBUNDLECHOICE=[HOSTINGBUNDLECHOICE]' />
+
+		<CustomAction Id='EnsurePrerequisites' BinaryKey='CustomActionsWeb' DllEntry='EnsurePrerequisites' Execute='deferred'
+					  Return='check' Impersonate='no'/>
+
+		<!-- Deferred: actually create/update the IIS Application Pool + Website. Data must be handed
+		     across the elevation boundary via CustomActionData, hence the two "Set...Data" property CAs. -->
+		<!-- Short keys: the authored template (before property substitution) must fit the MSI
+		     CustomAction.Target column's 255-char limit -->
+		<CustomAction Id='SetConfigureIisSiteData' Property='ConfigureIisSite'
+					  Value='SITE=[SITENAME];POOL=[APPPOOLNAME];DIR=[INSTALLFOLDER];HTTPSPORT=[HTTPSPORT];IDENT=[APPPOOLIDENTITYCHOICE];POOLUSER=[APPPOOLUSERNAME];POOLPASS=[APPPOOLPASSWORD];THUMB=[SSLTHUMBPRINT]' />
+
+		<CustomAction Id='ConfigureIisSite' BinaryKey='CustomActionsWeb' DllEntry='ConfigureIisSite' Execute='deferred'
+					  Return='check' Impersonate='no'/>
+
+		<CustomAction Id='SetRollbackIisSiteData' Property='RollbackIisSite'
+					  Value='SITE=[SITENAME];POOL=[APPPOOLNAME];HTTPSPORT=[HTTPSPORT]' />
+
+		<CustomAction Id='RollbackIisSite' BinaryKey='CustomActionsWeb' DllEntry='RollbackIisSite' Execute='rollback'
+					  Return='ignore' Impersonate='no'/>
+
+		<!-- Same DllEntry, reused as a normal (non-rollback) deferred CA for actual uninstall/purge -->
+		<CustomAction Id='SetRemoveIisSiteOnUninstallData' Property='RemoveIisSiteOnUninstall'
+					  Value='SITE=[SITENAME];POOL=[APPPOOLNAME];HTTPSPORT=[HTTPSPORT]' />
+
+		<CustomAction Id='RemoveIisSiteOnUninstall' BinaryKey='CustomActionsWeb' DllEntry='RollbackIisSite' Execute='deferred'
+					  Return='ignore' Impersonate='no'/>
+
+		<Binary Id='CustomActionsWeb' SourceFile='$(var.CustomActionsWeb.TargetDir)\$(var.CustomActionsWeb.TargetName).CA.dll'/>
+	</Fragment>
+</Wix>

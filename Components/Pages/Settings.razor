@@ -10,6 +10,7 @@
 @inject IHttpClientFactory HttpClientFactory
 @inject AuthenticationStateProvider AuthProvider
 @inject AuditLogService AuditLog
+@inject TriggerReloadChannel ReloadChannel
 
 <PageTitle>Settings - SuperTrigger</PageTitle>
 
@@ -258,6 +259,21 @@ else
                 <MudNumericField @bind-Value="_settings.SameFileIntervalInSeconds"
                                  Label="Same-File Debounce (seconds)" Min="1" Max="300" />
             </MudItem>
+            <MudItem xs="12" md="6">
+                <MudSelect T="string" @bind-Value="_settings.FileWatchMethod"
+                           Label="Detection Method"
+                           HelperText="Applies globally to all File Triggers — cannot be overridden per trigger">
+                    <MudSelectItem Value="@("FileSystemWatcher")">FileSystemWatcher (real-time, default)</MudSelectItem>
+                    <MudSelectItem Value="@("Polling")">Polling</MudSelectItem>
+                </MudSelect>
+            </MudItem>
+            @if (_settings.FileWatchMethod == "Polling")
+            {
+                <MudItem xs="12" md="4">
+                    <MudNumericField @bind-Value="_settings.FilePollingIntervalInSeconds"
+                                     Label="File Poll Interval (seconds)" Min="5" Max="3600" />
+                </MudItem>
+            }
 
             <MudItem xs="12">
                 <MudDivider Class="my-3" />
@@ -372,6 +388,12 @@ else
             await AuditLog.LogAsync(user, "Update", "Settings", "Orchestrator & Service Settings", string.Join(", ", changedFields));
         }
         _original = CloneSettings(_settings!);
+
+        if (changedFields.Contains(nameof(OrchSettings.FileWatchMethod)) ||
+            changedFields.Contains(nameof(OrchSettings.FilePollingIntervalInSeconds)))
+        {
+            ReloadChannel.RequestReload();
+        }
 
         Snackbar.Add("Settings saved", Severity.Success);
     }
