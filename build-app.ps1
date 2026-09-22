@@ -5,7 +5,7 @@
 .DESCRIPTION
     Framework-dependent publish, matching exactly what CreateMSI.Web.wixproj's PublishWebApp target
     runs ("dotnet publish -c <cfg> -o <dir>"), so the output of this script is what the MSI would
-    have harvested. Use build-msi.ps1 in the parent folder to produce the installer itself.
+    have harvested. Use build-msi.ps1 in this folder to produce the installer itself.
 
 .EXAMPLE
     .\build-app.ps1
@@ -30,8 +30,7 @@ param(
     # Compile only (dotnet build) - no publish output.
     [switch]$BuildOnly,
 
-    # Print compiler/NuGet warnings. Off by default: the Mail project reference emits several hundred
-    # CA1416/NU1504 warnings that bury the actual result.
+    # Print compiler/NuGet warnings. Off by default to keep the actual result readable.
     [switch]$ShowWarnings,
 
     [switch]$NoRestore
@@ -54,8 +53,8 @@ if (-not (Test-Path $ProjectPath)) {
 
 if (-not $Output) { $Output = Join-Path $ScriptRoot "publish" }
 
-# The project targets net8.0-windows and references Microsoft.Exchange.WebServices.dll plus
-# WPF-flavoured shared libraries (Mail, HmsTeam.Shared) - it cannot be built on Linux/macOS.
+# The project targets net8.0-windows and references Microsoft.Exchange.WebServices.dll - it cannot
+# be built on Linux/macOS.
 if (-not $IsWindows -and $PSVersionTable.PSVersion.Major -ge 6) {
     throw "SuperTrigger.Web targets net8.0-windows and must be built on Windows."
 }
