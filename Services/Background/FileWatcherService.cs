@@ -11,6 +11,10 @@ using SuperTrigger.Web.Services;
 
 namespace SuperTrigger.Web.Services.Background;
 
+public enum TriggerHealthState { Healthy, Down, Unknown }
+
+public sealed record TriggerStatus(TriggerHealthState State, DateTime? LastSeenAt, string DetectionMode);
+
 public class FileWatcherService(
     IDbContextFactory<AppDbContext> dbFactory,
     OrchestratorService orchestrator,
@@ -48,6 +52,7 @@ public class FileWatcherService(
         public int FailureCount { get; set; }
         public DateTime NextRetry { get; set; } = DateTime.MinValue;
         public DateTime? DownSince { get; set; }
+        public DateTime? LastEventAt { get; set; }
 
         // Polling-mode state. DetectionMode is set when the entry is registered and drives which
         // of these fields (vs. Watcher/FailureCount/DownSince above) are meaningful.
@@ -118,6 +123,35 @@ public class FileWatcherService(
         }
     }
 
+    /// <summary>
+    /// Per-trigger-id status, aggregated across a trigger's extension-watchers (worst status
+    /// wins - one unhealthy extension-watcher marks the whole trigger Down). A trigger id absent
+    /// from the result has not been loaded yet (Unknown).
+    /// </summary>
+    public IReadOnlyDictionary<int, TriggerStatus> GetStatuses()
+    {
+        WatcherEntry[] snapshot;
+        lock (_watchersLock) snapshot = [.. _watchers];
+
+        var result = new Dictionary<int, TriggerStatus>();
+        foreach (var group in snapshot.Where(e => !e.Disposed).GroupBy(e => e.Trigger.Id))
+        {
+            var entries = group.ToList();
+            var healthy = entries.All(e => e.Healthy);
+            var lastSeenTimes = entries
+                .Select(e => e.DetectionMode == "Polling" ? e.LastScanAt : e.LastEventAt)
+                .Where(t => t.HasValue)
+                .Select(t => t!.Value)
+                .ToList();
+
+            result[group.Key] = new TriggerStatus(
+                healthy ? TriggerHealthState.Healthy : TriggerHealthState.Down,
+                lastSeenTimes.Count > 0 ? lastSeenTimes.Max() : null,
+                entries[0].DetectionMode);
+        }
+        return result;
+    }
+
     private bool TryStartWatcher(WatcherEntry entry)
     {
         var trigger = entry.Trigger;
@@ -125,11 +159,14 @@ public class FileWatcherService(
         {
             var watcher = CreateWatcher(trigger.FolderPath, entry.Filter, trigger.WatcherUsername, trigger.WatcherPassword);
 
-            watcher.Created += (s, e) => OnFileEvent(e.FullPath, trigger);
+            watcher.Created += (s, e) => { entry.LastEventAt = DateTime.Now; OnFileEvent(e.FullPath, trigger); };
             watcher.Renamed += (s, e) =>
             {
                 if (Regex.IsMatch(e.Name ?? "", WildCardToRegular(entry.Filter)))
+                {
+                    entry.LastEventAt = DateTime.Now;
                     OnFileEvent(e.FullPath, trigger);
+                }
             };
             watcher.Error += (s, e) =>
                 MarkUnhealthy(entry, e.GetException().Message);

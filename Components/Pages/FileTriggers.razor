@@ -1,8 +1,11 @@
 @page "/file-triggers"
 @attribute [Authorize]
 @using SuperTrigger.Web.Components.Dialogs
+@using SuperTrigger.Web.Services.Background
+@implements IDisposable
 @inject IDbContextFactory<AppDbContext> DbFactory
 @inject TriggerReloadChannel ReloadChannel
+@inject FileWatcherService FileWatcher
 @inject ISnackbar Snackbar
 @inject IDialogService DialogService
 @inject AuditLogService AuditLog
@@ -89,6 +92,7 @@
           MultiSelection="true" @bind-SelectedItems="_selected">
     <HeaderContent>
         <MudTh>Active</MudTh>
+        <MudTh>Status</MudTh>
         <MudTh>Name</MudTh>
         <MudTh>Folder Path</MudTh>
         <MudTh>File Filter</MudTh>
@@ -115,6 +119,13 @@
                     </NotAuthorized>
                 </AuthorizeView>
             </div>
+        </MudTd>
+        <MudTd>
+            @{ var status = GetStatus(context.Id); }
+            <MudTooltip Text="@StatusTooltip(status)">
+                <MudChip T="string" Size="Size.Small" Variant="Variant.Filled"
+                         Color="@StatusColor(status.State)">@status.State</MudChip>
+            </MudTooltip>
         </MudTd>
         <MudTd>@context.TriggerName</MudTd>
         <MudTd>@context.FolderPath</MudTd>
@@ -149,8 +160,62 @@
     private string _filterDept = "";
     private string _filterProcess = "";
     private string _filterActive = "";
+    private IReadOnlyDictionary<int, TriggerStatus> _statuses = new Dictionary<int, TriggerStatus>();
+    private PeriodicTimer? _statusTimer;
+    private CancellationTokenSource? _statusTimerCts;
 
-    protected override async Task OnInitializedAsync() => await LoadAsync();
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadAsync();
+        RefreshStatuses();
+        StartStatusTimer();
+    }
+
+    private void StartStatusTimer()
+    {
+        _statusTimerCts = new CancellationTokenSource();
+        _statusTimer = new PeriodicTimer(TimeSpan.FromSeconds(10));
+        _ = StatusRefreshLoop(_statusTimerCts.Token);
+    }
+
+    private async Task StatusRefreshLoop(CancellationToken ct)
+    {
+        try
+        {
+            while (await _statusTimer!.WaitForNextTickAsync(ct))
+            {
+                RefreshStatuses();
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        catch (OperationCanceledException) { /* page disposed */ }
+    }
+
+    private void RefreshStatuses() => _statuses = FileWatcher.GetStatuses();
+
+    private TriggerStatus GetStatus(int triggerId) =>
+        _statuses.TryGetValue(triggerId, out var s) ? s : new TriggerStatus(TriggerHealthState.Unknown, null, "");
+
+    private static Color StatusColor(TriggerHealthState state) => state switch
+    {
+        TriggerHealthState.Healthy => Color.Success,
+        TriggerHealthState.Down => Color.Error,
+        _ => Color.Default
+    };
+
+    private static string StatusTooltip(TriggerStatus status)
+    {
+        var lastSeen = status.LastSeenAt is { } t ? t.ToString("g") : "never";
+        var mode = string.IsNullOrEmpty(status.DetectionMode) ? "unknown" : status.DetectionMode;
+        return $"Detection: {mode} | Last seen: {lastSeen}";
+    }
+
+    public void Dispose()
+    {
+        _statusTimerCts?.Cancel();
+        _statusTimerCts?.Dispose();
+        _statusTimer?.Dispose();
+    }
 
     private async Task<string> CurrentUsernameAsync() =>
         (await AuthProvider.GetAuthenticationStateAsync()).User.Identity?.Name ?? "unknown";
