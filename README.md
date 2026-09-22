@@ -67,16 +67,16 @@ The MSI detects and installs both runtimes itself (PrerequisitesDlg → `EnsureP
 
 ## Installation
 
-The app ships as an MSI (`HMS_SuperTriggerWebInstaller.msi`, built from the sibling `CreateMSI.Web` project) that installs the published files, creates the IIS Application Pool + Website, and binds an SSL certificate — no manual IIS configuration needed.
+The app ships as an MSI (`HMS_SuperTriggerWebInstaller.msi`, built from the bundled `CreateMSI` project) that installs the published files, creates the IIS Application Pool + Website, and binds an SSL certificate — no manual IIS configuration needed.
 
 ### Building the installer
 
 ```powershell
-"C:\Windows\Microsoft.NET\Framework64\v4.0.30319\MSBuild.exe" CreateMSI.Web.wixproj -t:Build -p:Configuration=Release
+.\build-msi.ps1
 ```
 This automatically runs `dotnet publish` for `SuperTrigger.Web` (framework-dependent) and produces:
 ```
-CreateMSI.Web\bin\Release\HMS_SuperTriggerWebInstaller.msi
+CreateMSI\bin\Release\HMS_SuperTriggerWebInstaller.msi   (also copied to ..\dist\)
 ```
 Requires WiX Toolset v3.11+ on the **build** machine only — not on the target server.
 
@@ -113,7 +113,7 @@ A default admin account (`admin` / `Admin123!`) is created on first run — **ch
 
 ### Upgrading
 
-1. Bump the `Version` attribute on `<Product>` in `CreateMSI.Web\Product.wxs` (keep the same `UpgradeCode`).
+1. Bump the `Version` attribute on `<Product>` in `CreateMSI\Product.wxs` (keep the same `UpgradeCode`).
 
    Version format is **`YY.M.Build`** (calendar-based) — e.g. the first build in August 2026 is `26.8.1`, the second `26.8.2`, the first in September `26.9.1`. This is a deliberate workaround, not a style choice: MSI's `ProductVersion` field is packed as Major/Minor/Build with hard caps of 255/255/65535, so a full 4-digit year (`2026.8.1`) is rejected outright by `candle.exe` (`CNDL0242: Invalid product version`) — two-digit year fits comfortably until year 2255.
 

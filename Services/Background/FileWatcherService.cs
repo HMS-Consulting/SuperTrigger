@@ -314,7 +314,7 @@ public class FileWatcherService(
             ["itemData"] = new JObject
             {
                 ["Reference"] = reference,
-                ["SpecificContent"] = new JObject { ["FilePath"] = filePath }
+                ["SpecificContent"] = new JObject { ["filePath"] = filePath }
             }
         };
     }

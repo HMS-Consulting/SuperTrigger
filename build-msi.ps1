@@ -16,8 +16,9 @@ $ScriptRoot = if ($PSScriptRoot) {
     (Get-Location).Path
 }
 
-if (-not $WixProjPath) { $WixProjPath = Join-Path $ScriptRoot "CreateMSI.Web\CreateMSI.Web.wixproj" }
-if (-not $DistDir) { $DistDir = Join-Path $ScriptRoot "dist" }
+if (-not $WixProjPath) { $WixProjPath = Join-Path $ScriptRoot "CreateMSI\CreateMSI.wixproj" }
+# The repo-root dist\ folder, one level above SuperTrigger.Web, is where the finished MSI is collected.
+if (-not $DistDir) { $DistDir = Join-Path (Split-Path -Parent $ScriptRoot) "dist" }
 
 function Get-NextAppVersion {
     param([string]$WixProjDir)
