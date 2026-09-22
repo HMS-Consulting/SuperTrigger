@@ -16,9 +16,7 @@
     <!-- No UseWindowsForms/UseWpf here on purpose: this is a headless IIS-hosted web app and uses no
          WinForms/WPF API. Either flag adds a Microsoft.WindowsDesktop.App framework reference to
          SuperTrigger.Web.runtimeconfig.json, which the ASP.NET Core Hosting Bundle does NOT install,
-         and the app then dies at startup with apphost exit code 0x80008096 (FrameworkMissingFailure).
-         Note the Mail/HmsTeam.Shared project references still drag WindowsDesktop.App in transitively;
-         CustomActions.EnsureAppRuntime is what guarantees it is actually present on the machine. -->
+         and the app then dies at startup with apphost exit code 0x80008096 (FrameworkMissingFailure). -->
   </PropertyGroup>
 
   <ItemGroup>
@@ -42,13 +40,8 @@
 
   <ItemGroup>
     <Reference Include="Microsoft.Exchange.WebServices">
-      <HintPath>..\Mail\CustomDLLs\Microsoft.Exchange.WebServices.dll</HintPath>
+      <HintPath>CustomDLLs\Microsoft.Exchange.WebServices.dll</HintPath>
     </Reference>
-  </ItemGroup>
-
-  <ItemGroup>
-    <ProjectReference Include="..\Mail\Mail.csproj" />
-    <ProjectReference Include="..\Shared\HmsTeam.UiPath.Shared\HmsTeam.Shared.csproj" />
   </ItemGroup>
 
   <ItemGroup>
