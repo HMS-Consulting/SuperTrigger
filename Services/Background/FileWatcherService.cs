@@ -84,10 +84,11 @@ public class FileWatcherService(
             var settings = await settingsService.GetAsync();
             _sameFileInterval = settings.SameFileIntervalInSeconds;
             _pollIntervalSeconds = settings.FilePollingIntervalInSeconds;
+            var usePolling = settings.FileWatchMethod == "Polling";
 
             await using var db = await dbFactory.CreateDbContextAsync();
             var triggers = await db.FileTriggers.Where(t => t.Active).ToListAsync();
-            logger.LogInformation("Loading {Count} active file triggers", triggers.Count);
+            logger.LogInformation("Loading {Count} active file triggers ({Method})", triggers.Count, settings.FileWatchMethod);
 
             foreach (var trigger in triggers)
             {
@@ -102,9 +103,12 @@ public class FileWatcherService(
                     var entry = new WatcherEntry(trigger, filter);
                     lock (_watchersLock) _watchers.Add(entry);
 
-                    // A failure here is not fatal: the entry stays registered and the
-                    // health loop keeps retrying until the folder becomes reachable.
-                    TryStartWatcher(entry);
+                    if (usePolling)
+                        StartPolling(entry, _stoppingToken);
+                    else
+                        // A failure here is not fatal: the entry stays registered and the
+                        // health loop keeps retrying until the folder becomes reachable.
+                        TryStartWatcher(entry);
                 }
             }
         }
@@ -216,6 +220,9 @@ public class FileWatcherService(
             {
                 if (ct.IsCancellationRequested) return;
                 if (entry.Disposed) continue;
+                // Polling entries self-heal inside PollLoopAsync/ScanFolder - this loop only
+                // covers the FileSystemWatcher path (create/error/retry).
+                if (entry.DetectionMode == "Polling") continue;
 
                 try
                 {
@@ -285,9 +292,8 @@ public class FileWatcherService(
     }
 
     /// <summary>
-    /// Registers a polling-mode watcher entry and starts its scan loop. Not currently called from
-    /// LoadWatchersAsync — the engine is implemented but not yet wired to the global
-    /// FileWatchMethod setting (see docs/file-watch-polling-plan.md, Stage 3).
+    /// Registers a polling-mode watcher entry and starts its scan loop. Called from
+    /// LoadWatchersAsync when settings.FileWatchMethod == "Polling".
     /// </summary>
     private void StartPolling(WatcherEntry entry, CancellationToken stoppingToken)
     {
