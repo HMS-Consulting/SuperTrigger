@@ -47,6 +47,8 @@ public static class DatabaseMigrator
         "ALTER TABLE OrchSettings ADD COLUMN GraphPassword TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE OrchSettings ADD COLUMN GraphDetectionMode TEXT NOT NULL DEFAULT 'Webhook'",
         "ALTER TABLE OrchSettings ADD COLUMN GlobalSharedMailBox TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE OrchSettings ADD COLUMN FileWatchMethod TEXT NOT NULL DEFAULT 'FileSystemWatcher'",
+        "ALTER TABLE OrchSettings ADD COLUMN FilePollingIntervalInSeconds INTEGER NOT NULL DEFAULT 30",
         "CREATE UNIQUE INDEX IF NOT EXISTS IX_MailTriggers_TriggerName ON MailTriggers(TriggerName)",
         "CREATE UNIQUE INDEX IF NOT EXISTS IX_FileTriggers_TriggerName ON FileTriggers(TriggerName)",
         """

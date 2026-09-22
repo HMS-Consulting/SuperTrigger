@@ -1,0 +1,565 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi" xmlns:util="http://schemas.microsoft.com/wix/UtilExtension">
+	<Product Id="*" Name="HMS_SuperTrigger.Web" Language="1033" Version="$(var.ProductVersion)" Manufacturer="HMS" UpgradeCode="534dc714-e017-4971-a79f-a49134ea9bee">
+		<!-- InstallerVersion 400 (Windows Installer 4.0) is the minimum that honours the MsiLogging
+		     property below. Every supported Windows version ships 5.0. -->
+		<Package InstallerVersion="400" Compressed="yes" InstallScope="perMachine" />
+		<MediaTemplate EmbedCab="yes" />
+
+		<!-- Always produce a verbose log, without the admin having to know to pass /l*v. Windows Installer
+		     writes it to %TEMP%\MSI<random>.LOG and puts the full path in MsiLogFileLocation, which the
+		     exit dialog surfaces and PrepareDbSetupRequest hands to the deferred SetupDatabase action so
+		     its error message can name the file. "voicewarmup" = everything except the very verbose "x". -->
+		<Property Id="MsiLogging" Value="voicewarmup" />
+
+		<!-- Hand-written major-upgrade logic (instead of the <MajorUpgrade> shortcut) so a same-version
+		     reinstall is refused outright rather than silently running as if it were a fresh install.
+		     The WiX default UpgradeVersion range only covers strictly-older versions, so re-running an
+		     MSI whose ProductVersion wasn't bumped since the last build/install used to go undetected. -->
+		<Upgrade Id="534dc714-e017-4971-a79f-a49134ea9bee">
+			<!-- Older version already installed: migrate its features and proceed as an upgrade. -->
+			<UpgradeVersion Minimum="0.0.0" IncludeMinimum="yes"
+							Maximum="!(bind.property.ProductVersion)" IncludeMaximum="no"
+							Property="WIX_UPGRADE_DETECTED" MigrateFeatures="yes" OnlyDetect="no" />
+			<!-- Exact same version already installed: detect only, so the LaunchCondition below can block it. -->
+			<UpgradeVersion Minimum="!(bind.property.ProductVersion)" IncludeMinimum="yes"
+							Maximum="!(bind.property.ProductVersion)" IncludeMaximum="yes"
+							Property="WIX_SAMEVERSION_DETECTED" OnlyDetect="yes" />
+			<!-- Newer version already installed: detect only, so the LaunchCondition below can block the downgrade. -->
+			<UpgradeVersion Minimum="!(bind.property.ProductVersion)" IncludeMinimum="no"
+							Property="WIX_DOWNGRADE_DETECTED" OnlyDetect="yes" />
+		</Upgrade>
+
+		<Condition Message="A newer version of [ProductName] is already installed.">NOT WIX_DOWNGRADE_DETECTED</Condition>
+		<Condition Message="This exact version of [ProductName] ([ProductVersion]) is already installed. Build a new version before installing.">NOT WIX_SAMEVERSION_DETECTED</Condition>
+		<!-- WIX_SAMEVERSION_DETECTED (above) only catches a *different* build sharing the current
+		     ProductVersion, via the UpgradeCode search. Re-running this exact already-built MSI file
+		     is a different case: same ProductCode, so Windows Installer sets the native "Installed"
+		     property instead. Block that too, but only when it's a plain reinstall attempt; REMOVE
+		     and REINSTALL must stay allowed, or Add/Remove Programs' own Uninstall/Repair would break. -->
+		<Condition Message="This exact installation of [ProductName] ([ProductVersion]) is already installed. Use Add/Remove Programs to repair or uninstall it, or build a new version before installing again.">NOT Installed OR REMOVE OR REINSTALL</Condition>
+
+		<!--For Admin Rquirement-->
+		<Property Id="MSIUSEREALADMINDETECTION" Value="1" />
+		<Condition Message="Installation requires Administrator privileges">
+			<![CDATA[Privileged]]>
+		</Condition>
+		<!--For Admin Rquirement-->
+
+		<!--Prerequisite detection: this installer configures IIS, so IIS + the ASP.NET Core Hosting
+		    Bundle (which registers the ASP.NET Core Module v2 IIS uses to host the app) must be present.
+		    These are no longer hard launch conditions; if missing, PrerequisitesDlg offers to install
+		    them automatically (with consent), and EnsurePrerequisites does the actual work.-->
+		<Property Id="IISMAJORVERSION">
+			<RegistrySearch Id="IisVersionSearch" Root="HKLM" Key="SOFTWARE\Microsoft\InetStp" Name="MajorVersion" Type="raw" />
+		</Property>
+
+		<Property Id="ANCMV2PATH">
+			<DirectorySearch Id="ProgramFilesSearch" Path="[ProgramFilesFolder]IIS\Asp.Net Core Module\V2">
+				<FileSearch Id="AncmV2FileSearch" Name="aspnetcorev2.dll" />
+			</DirectorySearch>
+		</Property>
+
+		<!-- Set by the DetectPrerequisites custom action to the comma-separated list of .NET 8 shared
+		     frameworks missing from this machine (empty when all are present). ANCMV2PATH alone is not
+		     enough: an older Hosting Bundle satisfies it while the 8.0 runtimes are absent, and
+		     Microsoft.WindowsDesktop.App — which the app still needs, because the Mail/HmsTeam.Shared
+		     project references are built with UseWpf — is in no Hosting Bundle at all. Missing it is
+		     what makes SuperTrigger.Web.exe die with apphost error 0x80008096 the first time the
+		     installer runs it. -->
+		<Property Id="RUNTIMESMISSING" Secure="yes" />
+
+		<Property Id="INSTALLIIS" Value="1" />
+		<Property Id="HOSTINGBUNDLECHOICE" Value="Download" />
+
+		<EnsureTable Id="ComboBox" />
+
+		<Feature Id="ProductFeature" Title="HMS_SuperTrigger.Web" Level="1">
+			<ComponentGroupRef Id="WebAppFiles" />
+			<ComponentRef Id="NLogConfigComponent" />
+		</Feature>
+
+		<!-- IIS site / app pool configuration, chosen interactively during install -->
+		<Property Id="SITENAME" Value="SuperTrigger.Web" />
+		<Property Id="APPPOOLNAME" Value="SuperTrigger.Web" />
+		<Property Id="HTTPSPORT" Value="443" />
+		<Property Id="APPPOOLIDENTITYCHOICE" Value="ApplicationPoolIdentity" />
+		<Property Id="APPPOOLUSERNAME" Secure="yes" />
+		<Property Id="APPPOOLPASSWORD" Secure="yes" />
+		<Property Id="SSLCHOICE" Value="SelfSigned" />
+		<Property Id="SSLTHUMBPRINT" Secure="yes" />
+
+		<!-- Database configuration, chosen interactively during install/upgrade. The defaults are
+		     what this product used before any of this became configurable (a SQLite file at the
+		     fixed path below); on an upgrade, ReadExistingDbConfig replaces them with whatever the
+		     existing installation is using, so clicking through keeps the same database. Properties
+		     set on the command line for a silent install always win over that prefill. -->
+		<Property Id="DBPROVIDER" Value="Sqlite" Secure="yes" />
+		<Property Id="DBPATH" Value="C:\ProgramData\HMS\SuperTriggerWeb\supertrigger.db" Secure="yes" />
+
+		<!-- SQL Server: host plus an optional instance and/or port ("host", "host\SQLEXPRESS",
+		     "host,1433" or both). SQLAUTHMODE is "Windows" (the IIS application pool identity) or
+		     "Sql" (SQL login). SQLPASSWORD is Hidden so it stays out of the installer log; it is
+		     DPAPI-encrypted before it is written anywhere. -->
+		<Property Id="SQLSERVER" Secure="yes" />
+		<Property Id="SQLPORT" Secure="yes" />
+		<Property Id="SQLINSTANCE" Secure="yes" />
+		<Property Id="SQLDATABASE" Value="SuperTriggerWeb" Secure="yes" />
+		<Property Id="SQLAUTHMODE" Value="Windows" Secure="yes" />
+		<Property Id="SQLUSER" Secure="yes" />
+		<Property Id="SQLPASSWORD" Secure="yes" Hidden="yes" />
+		<Property Id="SQLTRUSTCERT" Value="1" Secure="yes" />
+
+		<!-- "Copy" (bring the old database's data into the new one) or "Fresh" (start empty). Only
+		     ever consulted when the database is actually moving; a plain in-place upgrade ignores it. -->
+		<Property Id="DBDATAACTION" Value="Copy" Secure="yes" />
+
+		<!-- Set by ReadExistingDbConfig from the existing installation: the copy it took of the old
+		     appsettings.json, and enough of the old settings to tell whether the database is moving. -->
+		<Property Id="PREVDBCONFIGFILE" Secure="yes" />
+		<Property Id="PREVDBPROVIDER" Secure="yes" />
+		<Property Id="PREVDBPATH" Secure="yes" />
+		<Property Id="PREVSQLSERVER" Secure="yes" />
+		<Property Id="PREVSQLDATABASE" Secure="yes" />
+
+		<CustomAction Id="SetDefaultInstallFolder" Property="INSTALLFOLDER" Value="C:\inetpub\SuperTrigger.Web" />
+
+		<InstallUISequence>
+			<!-- Has to run before the wizard evaluates the PrerequisitesDlg conditions below, and it only
+			     reads directory names, so AppSearch is the natural place for it. -->
+			<Custom Action="DetectPrerequisites" After="AppSearch">1</Custom>
+			<Custom Action="SetDefaultInstallFolder" Before="CostFinalize"><![CDATA[NOT INSTALLFOLDER]]></Custom>
+			<!-- Needs INSTALLFOLDER (set above) to find a previous install's appsettings.json. Harmless
+			     no-op on a fresh install or one predating this DB config section. -->
+			<Custom Action="ReadExistingDbConfig" After="SetDefaultInstallFolder">1</Custom>
+		</InstallUISequence>
+
+		<InstallExecuteSequence>
+			<!-- Replaces the scheduling <MajorUpgrade> used to add automatically. Scheduled early
+			     (afterInstallInitialize), not late (afterInstallExecute): HarvestDirectoryGenerateGuidsNow
+			     mints brand-new Component GUIDs on every build, so the old and new product never share a
+			     component identity Windows Installer can match up. Removing the old product late (after
+			     the new product's InstallFiles has already written the current files) made the old
+			     product's own RemoveFiles step delete those just-installed files afterwards, since from
+			     its point of view they were still its own components at the same path, which is what
+			     emptied INSTALLFOLDER down to just the untouched logs directory during an upgrade.
+			     Uninstalling the old product completely before InstallFiles runs avoids that race. -->
+			<RemoveExistingProducts After="InstallInitialize" />
+			<Custom Action="SetDefaultInstallFolder" Before="CostFinalize"><![CDATA[NOT INSTALLFOLDER]]></Custom>
+			<!-- Must run before RemoveExistingProducts (scheduled above, right after InstallInitialize)
+			     deletes the previous install's appsettings.json, which is the only record of which
+			     database that installation was using. Covers silent installs too, where the UI
+			     sequence (and therefore its copy of this action) never runs at all; there it also
+			     prefills the properties the admin didn't pass on the command line. -->
+			<Custom Action="ReadExistingDbConfig" Before="InstallInitialize"><![CDATA[NOT REMOVE~="ALL"]]></Custom>
+			<!-- Runs before anything else touches IIS. Skipped entirely on uninstall, and effectively a
+			     fast no-op on any machine where both prerequisites are already present (it re-checks
+			     live state itself rather than trusting the AppSearch-time property snapshot). Deferred
+			     CAs must be sequenced between InstallInitialize and InstallFinalize (ICE77). -->
+			<Custom Action="SetEnsurePrerequisitesData" After="InstallInitialize"><![CDATA[NOT REMOVE~="ALL"]]></Custom>
+			<Custom Action="EnsurePrerequisites" After="SetEnsurePrerequisitesData"><![CDATA[NOT REMOVE~="ALL"]]></Custom>
+			<Custom Action="SetRollbackIisSiteData" After="InstallFiles">1</Custom>
+			<Custom Action="RollbackIisSite" After="SetRollbackIisSiteData">1</Custom>
+			<!-- Needs the just-installed SuperTrigger.Web.exe (InstallFiles) present, and must complete
+			     before the site is (re)configured/serving traffic. Skipped on uninstall, same as the
+			     IIS configuration below. -->
+			<Custom Action="PrepareDbSetupRequest" After="RollbackIisSite"><![CDATA[NOT REMOVE~="ALL"]]></Custom>
+			<Custom Action="SetupDatabase" After="PrepareDbSetupRequest"><![CDATA[NOT REMOVE~="ALL"]]></Custom>
+			<!-- Covers unattended/silent installs (msiexec /quiet), where the UI dialogs, and the
+			     DoAction hooks on their Next buttons, never run. Gated to NOT REMOVE="ALL": these must
+			     only run on install/reinstall, never on uninstall (by then RemoveFiles has already
+			     deleted web.config, so re-configuring the site here would just fail). Cert generation
+			     is additionally skipped on upgrades, since ConfigureIisSite preserves the already-bound
+			     certificate instead of minting a new self-signed one on every upgrade. -->
+			<Custom Action="GenerateSelfSignedCertificate" After="SetupDatabase"><![CDATA[NOT SSLTHUMBPRINT AND SSLCHOICE="SelfSigned" AND NOT REMOVE~="ALL" AND NOT WIX_UPGRADE_DETECTED]]></Custom>
+			<Custom Action="SetConfigureIisSiteData" After="GenerateSelfSignedCertificate"><![CDATA[NOT REMOVE~="ALL"]]></Custom>
+			<Custom Action="ConfigureIisSite" After="SetConfigureIisSiteData"><![CDATA[NOT REMOVE~="ALL"]]></Custom>
+			<!-- Uninstall/purge: tear the site + app pool down before RemoveFiles, otherwise w3wp still
+			     holds the app's DLLs open and file removal fails. NOT UPGRADINGPRODUCTCODE excludes the
+			     automatic removal of the OLD product that happens mid-upgrade (RemoveExistingProducts);
+			     the site must survive that step so the NEW product's ConfigureIisSite finds it still
+			     there and preserves its existing identity/binding/cert instead of resetting to defaults. -->
+			<Custom Action="SetRemoveIisSiteOnUninstallData" Before="RemoveIisSiteOnUninstall"><![CDATA[REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE]]></Custom>
+			<Custom Action="RemoveIisSiteOnUninstall" Before="RemoveFiles"><![CDATA[REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE]]></Custom>
+		</InstallExecuteSequence>
+
+		<Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
+
+		<!-- Puts the MsiLogging log path on the final wizard page, so an admin who has to report a
+		     problem can find it without re-running the install under /l*v. -->
+		<Property Id="WIXUI_EXITDIALOGOPTIONALTEXT" Value="Installer log: [MsiLogFileLocation]" />
+
+		<UI>
+			<ProgressText Action="EnsurePrerequisites">Checking/installing IIS and the .NET 8 runtimes (this can take several minutes)…</ProgressText>
+			<ProgressText Action="SetupDatabase">Creating/updating the database and migrating existing data…</ProgressText>
+
+			<Dialog Id="PrerequisitesDlg" Width="370" Height="270" Title="Missing Prerequisites">
+				<Control Id="Intro_Label" Type="Text" X="45" Y="20" Width="285" Height="30" TabSkip="no">
+					<Text>&amp;This application requires IIS and the .NET 8 runtimes (ASP.NET Core Hosting Bundle + Desktop Runtime, x64). The following are missing on this machine:</Text>
+				</Control>
+
+				<Control Id="Iis_CheckBox" Type="CheckBox" X="45" Y="60" Width="290" Height="17" Property="INSTALLIIS" CheckBoxValue="1"
+						  Text="Enable IIS (Web Server role) now">
+					<Condition Action="hide">IISMAJORVERSION</Condition>
+					<Condition Action="show">NOT IISMAJORVERSION</Condition>
+				</Control>
+				<Control Id="Iis_Note" Type="Text" X="60" Y="78" Width="275" Height="30" TabSkip="no">
+					<Text>Uses DISM locally -- no internet required. If Windows needs a restart to finish, the installer will stop and tell you to restart and run it again.</Text>
+					<Condition Action="hide">IISMAJORVERSION</Condition>
+					<Condition Action="show">NOT IISMAJORVERSION</Condition>
+				</Control>
+
+				<Control Id="HostingBundle_Label" Type="Text" X="45" Y="112" Width="285" Height="26" TabSkip="no">
+					<Text>&amp;.NET 8 runtimes -- ASP.NET Core Hosting Bundle and/or Desktop Runtime (x64):</Text>
+					<Condition Action="hide">ANCMV2PATH AND NOT RUNTIMESMISSING</Condition>
+					<Condition Action="show">NOT ANCMV2PATH OR RUNTIMESMISSING</Condition>
+				</Control>
+				<Control Height="40" Width="290" X="45" Y="140" Id="HostingBundle_Edit" Type="RadioButtonGroup" Property="HOSTINGBUNDLECHOICE">
+					<RadioButtonGroup Property="HOSTINGBUNDLECHOICE">
+						<RadioButton Value="Download" Height="20" Width="290" X="0" Y="0" Text="Download and install it now (requires internet access)" />
+						<RadioButton Value="Skip" Height="20" Width="290" X="0" Y="20" Text="I already installed it / will install it manually" />
+					</RadioButtonGroup>
+					<Condition Action="hide">ANCMV2PATH AND NOT RUNTIMESMISSING</Condition>
+					<Condition Action="show">NOT ANCMV2PATH OR RUNTIMESMISSING</Condition>
+				</Control>
+
+				<Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="Cancel">
+					<Publish Event="SpawnDialog" Value="CancelDlg">1</Publish>
+				</Control>
+				<Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="Next" />
+				<Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="Back" />
+			</Dialog>
+
+			<Dialog Id="AppPoolIdentityDlg" Width="370" Height="270" Title="Application Pool Identity">
+				<Control Id="AppPoolIdentity_Label" Type="Text" X="45" Y="20" Width="285" Height="20" TabSkip="no">
+					<Text>&amp;Choose how the IIS Application Pool should authenticate:</Text>
+				</Control>
+				<Control Height="40" Width="290" X="45" Y="45" Id="AppPoolIdentity_Edit" Type="RadioButtonGroup" Property="APPPOOLIDENTITYCHOICE">
+					<RadioButtonGroup Property="APPPOOLIDENTITYCHOICE">
+						<RadioButton Value="ApplicationPoolIdentity" Height="20" Width="290" X="0" Y="0" Text="Built-in ApplicationPoolIdentity account (recommended)" />
+						<RadioButton Value="SpecificUser" Height="20" Width="290" X="0" Y="20" Text="Specific domain user" />
+					</RadioButtonGroup>
+				</Control>
+
+				<Control Id="AppPoolUsername_Label" Type="Text" X="45" Y="95" Width="285" Height="15" TabSkip="no">
+					<Text>&amp;Username (DOMAIN\User):</Text>
+					<Condition Action="hide">APPPOOLIDENTITYCHOICE="ApplicationPoolIdentity"</Condition>
+					<Condition Action="show">APPPOOLIDENTITYCHOICE="SpecificUser"</Condition>
+				</Control>
+				<Control Id="AppPoolUsername_Edit" Type="Edit" X="45" Y="110" Width="220" Height="18" Property="APPPOOLUSERNAME" Text="{80}">
+					<Condition Action="hide">APPPOOLIDENTITYCHOICE="ApplicationPoolIdentity"</Condition>
+					<Condition Action="show">APPPOOLIDENTITYCHOICE="SpecificUser"</Condition>
+				</Control>
+
+				<Control Id="AppPoolPassword_Label" Type="Text" X="45" Y="135" Width="285" Height="15" TabSkip="no">
+					<Text>&amp;Password:</Text>
+					<Condition Action="hide">APPPOOLIDENTITYCHOICE="ApplicationPoolIdentity"</Condition>
+					<Condition Action="show">APPPOOLIDENTITYCHOICE="SpecificUser"</Condition>
+				</Control>
+				<Control Id="AppPoolPassword_Edit" Type="Edit" X="45" Y="150" Width="220" Height="18" Property="APPPOOLPASSWORD" Text="{80}" Password="yes">
+					<Condition Action="hide">APPPOOLIDENTITYCHOICE="ApplicationPoolIdentity"</Condition>
+					<Condition Action="show">APPPOOLIDENTITYCHOICE="SpecificUser"</Condition>
+				</Control>
+
+				<Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="Cancel">
+					<Publish Event="SpawnDialog" Value="CancelDlg">1</Publish>
+				</Control>
+				<Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="Next" />
+				<Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="Back" />
+			</Dialog>
+
+			<Dialog Id="SslCertDlg" Width="370" Height="270" Title="SSL Certificate">
+				<Control Id="Ssl_Label" Type="Text" X="45" Y="20" Width="285" Height="20" TabSkip="no">
+					<Text>&amp;Choose the SSL certificate for the HTTPS binding:</Text>
+				</Control>
+				<Control Height="40" Width="290" X="45" Y="45" Id="Ssl_Edit" Type="RadioButtonGroup" Property="SSLCHOICE">
+					<RadioButtonGroup Property="SSLCHOICE">
+						<RadioButton Value="Existing" Height="20" Width="290" X="0" Y="0" Text="Use an existing certificate from this machine's store" />
+						<RadioButton Value="SelfSigned" Height="20" Width="290" X="0" Y="20" Text="Generate a new self-signed certificate" />
+					</RadioButtonGroup>
+				</Control>
+
+				<Control Id="SslThumbprint_Label" Type="Text" X="45" Y="95" Width="285" Height="15" TabSkip="no">
+					<Text>&amp;Certificate:</Text>
+					<Condition Action="hide">SSLCHOICE="SelfSigned"</Condition>
+					<Condition Action="show">SSLCHOICE="Existing"</Condition>
+				</Control>
+				<Control Id="SslThumbprint_ComboBox" Type="ComboBox" X="45" Y="110" Width="285" Height="18" Property="SSLTHUMBPRINT" ComboList="yes" Sorted="yes">
+					<Condition Action="hide">SSLCHOICE="SelfSigned"</Condition>
+					<Condition Action="show">SSLCHOICE="Existing"</Condition>
+				</Control>
+
+				<Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="Cancel">
+					<Publish Event="SpawnDialog" Value="CancelDlg">1</Publish>
+				</Control>
+				<Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="Next" />
+				<Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="Back" />
+			</Dialog>
+
+			<Dialog Id="UpgradeDetectedDlg" Width="370" Height="270" Title="Upgrade Detected">
+				<Control Id="Upgrade_Label" Type="Text" X="45" Y="60" Width="285" Height="90" TabSkip="no">
+					<Text>&amp;An existing installation of [ProductName] was found on this computer.
+
+Clicking Next will upgrade it to version [ProductVersion]. The existing IIS Application Pool identity and SSL certificate are kept as-is -- you will not be asked to reconfigure them.</Text>
+				</Control>
+
+				<Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="Cancel">
+					<Publish Event="SpawnDialog" Value="CancelDlg">1</Publish>
+				</Control>
+				<Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="Next" />
+				<Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="Back" />
+			</Dialog>
+
+			<!-- Reached on both fresh installs and upgrades. On upgrades, the database properties
+			     already carry the settings the existing installation uses (ReadExistingDbConfig, run
+			     earlier in the UI sequence), so clicking straight through keeps that database. -->
+			<Dialog Id="DatabaseProviderDlg" Width="370" Height="270" Title="Database">
+				<Control Id="Provider_Label" Type="Text" X="45" Y="20" Width="285" Height="20" TabSkip="no">
+					<Text>&amp;Where should [ProductName] keep its configuration, triggers and logs?</Text>
+				</Control>
+				<Control Height="40" Width="290" X="45" Y="45" Id="Provider_Edit" Type="RadioButtonGroup" Property="DBPROVIDER">
+					<RadioButtonGroup Property="DBPROVIDER">
+						<RadioButton Value="Sqlite" Height="20" Width="290" X="0" Y="0" Text="A SQLite database file on this machine (default)" />
+						<RadioButton Value="SqlServer" Height="20" Width="290" X="0" Y="20" Text="Microsoft SQL Server" />
+					</RadioButtonGroup>
+				</Control>
+				<Control Id="Provider_Note" Type="Text" X="45" Y="95" Width="285" Height="40" TabSkip="no">
+					<Text>SQL Server needs an existing server you can reach from this machine. The database itself is created during installation if it does not exist yet.</Text>
+				</Control>
+				<Control Id="Provider_Existing" Type="Text" X="45" Y="145" Width="285" Height="40" TabSkip="no">
+					<Text>The installation currently on this machine uses: [PREVDBPROVIDER]. If you pick a different database here, the next screens let you bring its data across.</Text>
+					<Condition Action="hide">NOT PREVDBPROVIDER</Condition>
+					<Condition Action="show">PREVDBPROVIDER</Condition>
+				</Control>
+
+				<Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="Cancel">
+					<Publish Event="SpawnDialog" Value="CancelDlg">1</Publish>
+				</Control>
+				<Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="Next" />
+				<Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="Back" />
+			</Dialog>
+
+			<Dialog Id="DatabaseLocationDlg" Width="370" Height="270" Title="Database Location">
+				<Control Id="Db_Label" Type="Text" X="45" Y="20" Width="285" Height="40" TabSkip="no">
+					<Text>&amp;Choose the SQLite database file for [ProductName]. If it doesn't exist yet, it will be created; if it already exists, it will be updated to match this version.</Text>
+				</Control>
+				<Control Id="DbPath_Edit" Type="Edit" X="45" Y="65" Width="285" Height="18" Property="DBPATH" Text="{80}" />
+
+				<Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="Cancel">
+					<Publish Event="SpawnDialog" Value="CancelDlg">1</Publish>
+				</Control>
+				<Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="Next" />
+				<Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="Back" />
+			</Dialog>
+
+			<!-- Shown instead of DatabaseLocationDlg when DBPROVIDER=SqlServer. "Test Connection"
+			     checks the details against the live server (via master, so a database that doesn't
+			     exist yet still gives a useful answer) and reports back in a message box. -->
+			<Dialog Id="SqlServerDlg" Width="370" Height="270" Title="SQL Server Database">
+				<Control Id="Sql_Label" Type="Text" X="20" Y="12" Width="330" Height="20" TabSkip="no">
+					<Text>&amp;Enter the SQL Server connection details for [ProductName]:</Text>
+				</Control>
+
+				<Control Id="SqlServer_Label" Type="Text" X="20" Y="38" Width="70" Height="15" TabSkip="no">
+					<Text>Server:</Text>
+				</Control>
+				<Control Id="SqlServer_Edit" Type="Edit" X="95" Y="36" Width="180" Height="18" Property="SQLSERVER" Text="{80}" />
+
+				<Control Id="SqlPort_Label" Type="Text" X="20" Y="60" Width="70" Height="15" TabSkip="no">
+					<Text>Port (optional):</Text>
+				</Control>
+				<Control Id="SqlPort_Edit" Type="Edit" X="95" Y="58" Width="70" Height="18" Property="SQLPORT" Text="{8}" />
+
+				<Control Id="SqlInstance_Label" Type="Text" X="20" Y="82" Width="70" Height="15" TabSkip="no">
+					<Text>Instance (opt.):</Text>
+				</Control>
+				<Control Id="SqlInstance_Edit" Type="Edit" X="95" Y="80" Width="180" Height="18" Property="SQLINSTANCE" Text="{80}" />
+
+				<Control Id="SqlDatabase_Label" Type="Text" X="20" Y="104" Width="70" Height="15" TabSkip="no">
+					<Text>Database:</Text>
+				</Control>
+				<Control Id="SqlDatabase_Edit" Type="Edit" X="95" Y="102" Width="180" Height="18" Property="SQLDATABASE" Text="{80}" />
+
+				<Control Height="34" Width="330" X="20" Y="126" Id="SqlAuth_Edit" Type="RadioButtonGroup" Property="SQLAUTHMODE">
+					<RadioButtonGroup Property="SQLAUTHMODE">
+						<RadioButton Value="Windows" Height="17" Width="330" X="0" Y="0" Text="Windows authentication (the IIS application pool identity)" />
+						<RadioButton Value="Sql" Height="17" Width="330" X="0" Y="17" Text="SQL Server authentication" />
+					</RadioButtonGroup>
+				</Control>
+
+				<Control Id="SqlUser_Label" Type="Text" X="20" Y="166" Width="70" Height="15" TabSkip="no">
+					<Text>Login:</Text>
+					<Condition Action="hide">SQLAUTHMODE="Windows"</Condition>
+					<Condition Action="show">SQLAUTHMODE="Sql"</Condition>
+				</Control>
+				<Control Id="SqlUser_Edit" Type="Edit" X="95" Y="164" Width="180" Height="18" Property="SQLUSER" Text="{80}">
+					<Condition Action="hide">SQLAUTHMODE="Windows"</Condition>
+					<Condition Action="show">SQLAUTHMODE="Sql"</Condition>
+				</Control>
+
+				<Control Id="SqlPassword_Label" Type="Text" X="20" Y="188" Width="70" Height="15" TabSkip="no">
+					<Text>Password:</Text>
+					<Condition Action="hide">SQLAUTHMODE="Windows"</Condition>
+					<Condition Action="show">SQLAUTHMODE="Sql"</Condition>
+				</Control>
+				<Control Id="SqlPassword_Edit" Type="Edit" X="95" Y="186" Width="180" Height="18" Property="SQLPASSWORD" Text="{80}" Password="yes">
+					<Condition Action="hide">SQLAUTHMODE="Windows"</Condition>
+					<Condition Action="show">SQLAUTHMODE="Sql"</Condition>
+				</Control>
+
+				<Control Id="SqlTrustCert_CheckBox" Type="CheckBox" X="20" Y="210" Width="330" Height="17" Property="SQLTRUSTCERT" CheckBoxValue="1"
+						  Text="Trust the server certificate (needed for a self-signed SQL Server certificate)" />
+
+				<Control Id="TestConnection" Type="PushButton" X="20" Y="243" Width="100" Height="17" Text="Test Connection">
+					<Publish Event="DoAction" Value="TestSqlConnection">1</Publish>
+				</Control>
+				<Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="Cancel">
+					<Publish Event="SpawnDialog" Value="CancelDlg">1</Publish>
+				</Control>
+				<Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="Next" />
+				<Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="Back" />
+			</Dialog>
+
+			<!-- Only reached when the chosen database is not the one the existing installation uses
+			     (switching between SQLite and SQL Server, or moving to a different file/server). A
+			     plain in-place upgrade never shows this: there is nothing to move. -->
+			<Dialog Id="DataMigrationDlg" Width="370" Height="270" Title="Existing Data">
+				<Control Id="Data_Label" Type="Text" X="45" Y="20" Width="285" Height="40" TabSkip="no">
+					<Text>&amp;This installation is moving to a different database. What should happen to the data in the current one?</Text>
+				</Control>
+				<Control Height="60" Width="290" X="45" Y="65" Id="Data_Edit" Type="RadioButtonGroup" Property="DBDATAACTION">
+					<RadioButtonGroup Property="DBDATAACTION">
+						<RadioButton Value="Copy" Height="28" Width="290" X="0" Y="0" Text="Copy it into the new database (triggers, users, settings and logs)" />
+						<RadioButton Value="Fresh" Height="28" Width="290" X="0" Y="30" Text="Start with a new, empty database" />
+					</RadioButtonGroup>
+				</Control>
+				<Control Id="Data_Note" Type="Text" X="45" Y="135" Width="285" Height="60" TabSkip="no">
+					<Text>Either way the current database is left exactly as it is -- nothing is deleted, so you can point the application back at it later by editing appsettings.json. Copying skips any table that already contains rows in the new database.</Text>
+				</Control>
+
+				<Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="Cancel">
+					<Publish Event="SpawnDialog" Value="CancelDlg">1</Publish>
+				</Control>
+				<Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="Next" />
+				<Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="Back" />
+			</Dialog>
+
+			<UIRef Id="WixUI_Common" />
+
+			<TextStyle Id="WixUI_Font_Normal" FaceName="Tahoma" Size="8" />
+			<TextStyle Id="WixUI_Font_Bigger" FaceName="Tahoma" Size="12" />
+			<TextStyle Id="WixUI_Font_Title" FaceName="Tahoma" Size="9" Bold="yes" />
+
+			<Property Id="DefaultUIFont" Value="WixUI_Font_Normal" />
+
+			<DialogRef Id="ErrorDlg" />
+			<DialogRef Id="FatalError" />
+			<DialogRef Id="FilesInUse" />
+			<DialogRef Id="MsiRMFilesInUse" />
+			<DialogRef Id="PrepareDlg" />
+			<DialogRef Id="ProgressDlg" />
+			<DialogRef Id="ResumeDlg" />
+			<DialogRef Id="UserExit" />
+			<DialogRef Id="ExitDialog" />
+
+			<Publish Dialog="ExitDialog" Control="Finish" Event="EndDialog" Value="Return" Order="999">1</Publish>
+
+			<Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="InstallDirDlg" Order="2">1</Publish>
+			<!-- Upgrading an existing install: go straight to a clear "this is an upgrade" screen and
+			     from there to VerifyReadyDlg, bypassing the folder/identity/cert dialogs entirely (they
+			     ask about things that are only relevant to a fresh install and are otherwise preserved). -->
+			<Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="UpgradeDetectedDlg" Order="3">WIX_UPGRADE_DETECTED</Publish>
+			<!-- Missing prerequisites take priority over the upgrade screen even on an upgrade machine. -->
+			<Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="PrerequisitesDlg" Order="4">NOT IISMAJORVERSION OR NOT ANCMV2PATH OR RUNTIMESMISSING</Publish>
+
+			<Publish Dialog="UpgradeDetectedDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg">1</Publish>
+			<Publish Dialog="UpgradeDetectedDlg" Control="Next" Event="NewDialog" Value="DatabaseProviderDlg">1</Publish>
+
+			<Publish Dialog="PrerequisitesDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg">1</Publish>
+			<Publish Dialog="PrerequisitesDlg" Control="Next" Event="NewDialog" Value="InstallDirDlg" Order="1">1</Publish>
+			<Publish Dialog="PrerequisitesDlg" Control="Next" Event="NewDialog" Value="UpgradeDetectedDlg" Order="2">WIX_UPGRADE_DETECTED</Publish>
+
+			<Publish Dialog="InstallDirDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg" Order="1">1</Publish>
+			<Publish Dialog="InstallDirDlg" Control="Back" Event="NewDialog" Value="PrerequisitesDlg" Order="2">NOT IISMAJORVERSION OR NOT ANCMV2PATH OR RUNTIMESMISSING</Publish>
+			<!-- InstallDirDlg is only ever reached on a fresh install now; both entry points
+			     (WelcomeDlg and PrerequisitesDlg) route straight to UpgradeDetectedDlg instead when
+			     WIX_UPGRADE_DETECTED, so no upgrade-specific skip is needed here. -->
+			<Publish Dialog="InstallDirDlg" Control="Next" Event="NewDialog" Value="DatabaseProviderDlg" Order="3">1</Publish>
+			<Publish Dialog="InstallDirDlg" Control="ChangeFolder" Property="_BrowseProperty" Value="[WIXUI_INSTALLDIR]" Order="1">1</Publish>
+			<Publish Dialog="InstallDirDlg" Control="ChangeFolder" Event="SpawnDialog" Value="BrowseDlg" Order="2">1</Publish>
+
+			<Publish Dialog="DatabaseProviderDlg" Control="Back" Event="NewDialog" Value="InstallDirDlg" Order="1">1</Publish>
+			<Publish Dialog="DatabaseProviderDlg" Control="Back" Event="NewDialog" Value="UpgradeDetectedDlg" Order="2">WIX_UPGRADE_DETECTED</Publish>
+			<Publish Dialog="DatabaseProviderDlg" Control="Next" Event="NewDialog" Value="DatabaseLocationDlg" Order="1">1</Publish>
+			<Publish Dialog="DatabaseProviderDlg" Control="Next" Event="NewDialog" Value="SqlServerDlg" Order="2">DBPROVIDER="SqlServer"</Publish>
+
+			<!-- Shared by both flows: fresh install continues on to the IIS identity/cert dialogs;
+			     upgrade skips straight to VerifyReadyDlg (those are preserved from the prior install).
+			     Either way, a database that differs from the one the existing installation uses
+			     detours through DataMigrationDlg first (highest Order wins, so it takes precedence). -->
+			<Publish Dialog="DatabaseLocationDlg" Control="Back" Event="NewDialog" Value="DatabaseProviderDlg">1</Publish>
+			<Publish Dialog="DatabaseLocationDlg" Control="Next" Event="NewDialog" Value="AppPoolIdentityDlg" Order="1">1</Publish>
+			<Publish Dialog="DatabaseLocationDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg" Order="2">WIX_UPGRADE_DETECTED</Publish>
+			<Publish Dialog="DatabaseLocationDlg" Control="Next" Event="NewDialog" Value="DataMigrationDlg" Order="3"><![CDATA[PREVDBPROVIDER AND (DBPROVIDER ~<> PREVDBPROVIDER OR DBPATH ~<> PREVDBPATH)]]></Publish>
+
+			<Publish Dialog="SqlServerDlg" Control="Back" Event="NewDialog" Value="DatabaseProviderDlg">1</Publish>
+			<Publish Dialog="SqlServerDlg" Control="Next" Event="NewDialog" Value="AppPoolIdentityDlg" Order="1">1</Publish>
+			<Publish Dialog="SqlServerDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg" Order="2">WIX_UPGRADE_DETECTED</Publish>
+			<Publish Dialog="SqlServerDlg" Control="Next" Event="NewDialog" Value="DataMigrationDlg" Order="3"><![CDATA[PREVDBPROVIDER AND (DBPROVIDER ~<> PREVDBPROVIDER OR SQLSERVER ~<> PREVSQLSERVER OR SQLDATABASE ~<> PREVSQLDATABASE)]]></Publish>
+
+			<Publish Dialog="DataMigrationDlg" Control="Back" Event="NewDialog" Value="DatabaseLocationDlg" Order="1">1</Publish>
+			<Publish Dialog="DataMigrationDlg" Control="Back" Event="NewDialog" Value="SqlServerDlg" Order="2">DBPROVIDER="SqlServer"</Publish>
+			<Publish Dialog="DataMigrationDlg" Control="Next" Event="NewDialog" Value="AppPoolIdentityDlg" Order="1">1</Publish>
+			<Publish Dialog="DataMigrationDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg" Order="2">WIX_UPGRADE_DETECTED</Publish>
+
+			<Publish Dialog="AppPoolIdentityDlg" Control="Back" Event="NewDialog" Value="DatabaseLocationDlg" Order="1">1</Publish>
+			<Publish Dialog="AppPoolIdentityDlg" Control="Back" Event="NewDialog" Value="SqlServerDlg" Order="2">DBPROVIDER="SqlServer"</Publish>
+			<Publish Dialog="AppPoolIdentityDlg" Control="Back" Event="NewDialog" Value="DataMigrationDlg" Order="3"><![CDATA[PREVDBPROVIDER AND (DBPROVIDER ~<> PREVDBPROVIDER OR (DBPROVIDER = "Sqlite" AND DBPATH ~<> PREVDBPATH) OR (DBPROVIDER = "SqlServer" AND (SQLSERVER ~<> PREVSQLSERVER OR SQLDATABASE ~<> PREVSQLDATABASE)))]]></Publish>
+			<Publish Dialog="AppPoolIdentityDlg" Control="Next" Event="DoAction" Value="EnumerateCertificates" Order="1">1</Publish>
+			<Publish Dialog="AppPoolIdentityDlg" Control="Next" Event="NewDialog" Value="SslCertDlg" Order="2">1</Publish>
+
+			<Publish Dialog="SslCertDlg" Control="Back" Event="NewDialog" Value="AppPoolIdentityDlg">1</Publish>
+			<Publish Dialog="SslCertDlg" Control="Next" Event="DoAction" Value="GenerateSelfSignedCertificate" Order="1">SSLCHOICE="SelfSigned"</Publish>
+			<Publish Dialog="SslCertDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg" Order="2">1</Publish>
+
+			<Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="SslCertDlg" Order="1">1</Publish>
+			<!-- Upgrades never see SslCertDlg, so Back retraces the database dialogs instead. -->
+			<Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="DatabaseLocationDlg" Order="2">WIX_UPGRADE_DETECTED</Publish>
+			<Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="SqlServerDlg" Order="3"><![CDATA[WIX_UPGRADE_DETECTED AND DBPROVIDER="SqlServer"]]></Publish>
+			<Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="DataMigrationDlg" Order="4"><![CDATA[WIX_UPGRADE_DETECTED AND PREVDBPROVIDER AND (DBPROVIDER ~<> PREVDBPROVIDER OR (DBPROVIDER = "Sqlite" AND DBPATH ~<> PREVDBPATH) OR (DBPROVIDER = "SqlServer" AND (SQLSERVER ~<> PREVSQLSERVER OR SQLDATABASE ~<> PREVSQLDATABASE)))]]></Publish>
+
+		</UI>
+	</Product>
+
+	<Fragment>
+		<Directory Id="TARGETDIR" Name="SourceDir">
+			<Directory Id="INSTALLFOLDER" Name="SuperTrigger.Web" />
+		</Directory>
+	</Fragment>
+
+	<!-- Authored by hand instead of harvested, with a Guid fixed across every build (unlike the
+	     rest of WebAppFiles, which gets fresh auto-generated Guids each build: see
+	     NeverOverwriteNLogConfig.xslt). A stable Guid is what lets Windows Installer recognize
+	     this as the same component the previous version installed; NeverOverwrite then keeps the
+	     new product's install from clobbering an admin's hand-edited nlog.config with the fresh
+	     one from this build.
+
+	     Permanent="yes" is required too, not optional: RemoveExistingProducts is scheduled early
+	     (right after InstallInitialize, see above), but ProcessComponents, the action that
+	     registers the NEW product as a client of shared components, runs only later, after
+	     RemoveExistingProducts. So when the old product is uninstalled, Windows Installer doesn't
+	     yet know this component is still needed and drops its refcount to zero, deleting the file
+	     outright. NeverOverwrite doesn't prevent this: its cost-time decision (made at
+	     CostFinalize, before InstallInitialize) already skipped reinstalling the file because it
+	     found it present on disk, so nothing rewrites it afterwards either. Net effect without
+	     Permanent: nlog.config is deleted on every upgrade and never comes back. Permanent
+	     excludes the component from removal entirely, independent of that refcount timing, so the
+	     file survives the old product's removal untouched. -->
+	<Fragment>
+		<DirectoryRef Id="INSTALLFOLDER">
+			<Component Id="NLogConfigComponent" Guid="BD407D18-62BF-4E4B-8783-CE135F5DF2EB" NeverOverwrite="yes" Permanent="yes">
+				<File Id="NLogConfigFile" KeyPath="yes" Source="publish\nlog.config" />
+			</Component>
+		</DirectoryRef>
+	</Fragment>
+</Wix>

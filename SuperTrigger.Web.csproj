@@ -8,6 +8,11 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>SuperTrigger.Web</RootNamespace>
     <AssemblyName>SuperTrigger.Web</AssemblyName>
+    <!-- CreateMSI\ is the WiX installer project that lives inside this folder. Its publish\ staging
+         directory holds a full copy of this app's own output, so it must stay out of the SDK's
+         default Content globs (**/*.json, **/*.config) - otherwise every build would fold the
+         previous build's output back into the next one. -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);CreateMSI\**</DefaultItemExcludes>
     <!-- No UseWindowsForms/UseWpf here on purpose: this is a headless IIS-hosted web app and uses no
          WinForms/WPF API. Either flag adds a Microsoft.WindowsDesktop.App framework reference to
          SuperTrigger.Web.runtimeconfig.json, which the ASP.NET Core Hosting Bundle does NOT install,

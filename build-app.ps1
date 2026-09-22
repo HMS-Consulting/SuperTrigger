@@ -3,7 +3,7 @@
     Builds / publishes SuperTrigger.Web.
 
 .DESCRIPTION
-    Framework-dependent publish, matching exactly what CreateMSI.Web.wixproj's PublishWebApp target
+    Framework-dependent publish, matching exactly what CreateMSI\CreateMSI.wixproj's PublishWebApp target
     runs ("dotnet publish -c <cfg> -o <dir>"), so the output of this script is what the MSI would
     have harvested. Use build-msi.ps1 in this folder to produce the installer itself.
 

@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" DefaultTargets="Build" InitialTargets="EnsureWixToolsetInstalled;PublishWebApp" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">x86</Platform>
+    <ProductVersion>3.10</ProductVersion>
+    <ProjectGuid>38057752-d544-4fac-a9be-8c9116f15cf8</ProjectGuid>
+    <SchemaVersion>2.0</SchemaVersion>
+    <OutputName>HMS_SuperTriggerWebInstaller</OutputName>
+    <OutputType>Package</OutputType>
+    <WebAppPublishDir>$(MSBuildThisFileDirectory)publish\</WebAppPublishDir>
+    <!-- INSTALLFOLDER isn't nested under ProgramFilesFolder, so "*" auto-guids (the default) don't
+         qualify; generate real guids for harvested components instead. -->
+    <HarvestDirectoryAutogenerateGuids>false</HarvestDirectoryAutogenerateGuids>
+    <HarvestDirectoryGenerateGuidsNow>true</HarvestDirectoryGenerateGuidsNow>
+    <!-- The MSI's own ProductVersion (unrelated to the WiX schema <ProductVersion> above). Overridden
+         from the command line by build-msi.ps1 via /p:AppVersion=x.y.z on every build. -->
+    <AppVersion Condition=" '$(AppVersion)' == '' ">26.8.8</AppVersion>
+    <DefineConstants>ProductVersion=$(AppVersion)</DefineConstants>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|x86' ">
+    <OutputPath>bin\$(Configuration)\</OutputPath>
+    <IntermediateOutputPath>obj\$(Configuration)\</IntermediateOutputPath>
+    <DefineConstants>$(DefineConstants);Debug</DefineConstants>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|x86' ">
+    <OutputPath>bin\$(Configuration)\</OutputPath>
+    <IntermediateOutputPath>obj\$(Configuration)\</IntermediateOutputPath>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="ca.wxs" />
+    <Compile Include="Product.wxs" />
+  </ItemGroup>
+  <ItemGroup>
+    <HarvestDirectory Include="$(WebAppPublishDir)">
+      <ComponentGroupName>WebAppFiles</ComponentGroupName>
+      <DirectoryRefId>INSTALLFOLDER</DirectoryRefId>
+      <SuppressCom>true</SuppressCom>
+      <SuppressRegistry>true</SuppressRegistry>
+      <SuppressRootDirectory>true</SuppressRootDirectory>
+      <!-- Strips the harvested nlog.config Component out of WebAppFiles; Product.wxs authors it
+           manually instead (fixed Guid + NeverOverwrite="yes") so upgrades/repairs never clobber
+           an admin's hand-edited logging config on the target machine. -->
+      <Transforms>NeverOverwriteNLogConfig.xslt</Transforms>
+    </HarvestDirectory>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="NeverOverwriteNLogConfig.xslt" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- heat emits File Source paths as "SourceDir\..."; this tells light.exe where SourceDir resolves to -->
+    <BindInputPaths Include="$(WebAppPublishDir)" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\CustomActions.Web\CustomActions.Web.csproj">
+      <Name>CustomActionsWeb</Name>
+      <Project>{e73a7c1c-5f1a-44e8-a6bd-3f864862e980}</Project>
+      <Private>True</Private>
+      <DoNotHarvest>True</DoNotHarvest>
+      <RefProjectOutputGroups>Binaries;Content;Satellites</RefProjectOutputGroups>
+    </ProjectReference>
+  </ItemGroup>
+  <ItemGroup>
+    <WixExtension Include="WixUtilExtension">
+      <HintPath>$(WixExtDir)\WixUtilExtension.dll</HintPath>
+      <Name>WixUtilExtension</Name>
+    </WixExtension>
+    <WixExtension Include="WixUIExtension">
+      <HintPath>$(WixExtDir)\WixUIExtension.dll</HintPath>
+      <Name>WixUIExtension</Name>
+    </WixExtension>
+  </ItemGroup>
+  <Target Name="PublishWebApp">
+    <Exec Command="dotnet publish &quot;$(MSBuildThisFileDirectory)..\SuperTrigger.Web.csproj&quot; -c $(Configuration) -o &quot;$(WebAppPublishDir)&quot;" />
+  </Target>
+  <Import Project="$(WixTargetsPath)" Condition=" '$(WixTargetsPath)' != '' " />
+  <Import Project="$(MSBuildExtensionsPath32)\Microsoft\WiX\v3.x\Wix.targets" Condition=" '$(WixTargetsPath)' == '' AND Exists('$(MSBuildExtensionsPath32)\Microsoft\WiX\v3.x\Wix.targets') " />
+  <Target Name="EnsureWixToolsetInstalled" Condition=" '$(WixTargetsImported)' != 'true' ">
+    <Error Text="The WiX Toolset v3.11 (or newer) build tools must be installed to build this project. To download the WiX Toolset, see http://wixtoolset.org/releases/" />
+  </Target>
+</Project>
