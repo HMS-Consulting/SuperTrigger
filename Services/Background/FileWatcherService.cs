@@ -23,6 +23,15 @@ public class FileWatcherService(
     private readonly Dictionary<string, DateTime> _fileHistory = [];
     private readonly object _historyLock = new();
     private int _sameFileInterval = 20;
+    private int _pollIntervalSeconds = 30;
+
+    // Bounds how many folders can have a poll scan (SMB directory listing) in flight at once,
+    // regardless of trigger count. This directly targets the SMB credit-exhaustion root cause
+    // that FileSystemWatcher hits at ~100 concurrent persistent watches. Not admin-configurable
+    // on purpose - see docs/file-watch-polling-plan.md.
+    private const int MaxConcurrentPollScans = 10;
+    private const int MaxFilesPerPollScan = MaxRescanFiles;
+    private readonly SemaphoreSlim _pollSemaphore = new(MaxConcurrentPollScans);
 
     private const int HealthCheckIntervalSeconds = 15;
     private const int BaseRetrySeconds = 15;
@@ -39,10 +48,21 @@ public class FileWatcherService(
         public int FailureCount { get; set; }
         public DateTime NextRetry { get; set; } = DateTime.MinValue;
         public DateTime? DownSince { get; set; }
+
+        // Polling-mode state. DetectionMode is set when the entry is registered and drives which
+        // of these fields (vs. Watcher/FailureCount/DownSince above) are meaningful.
+        public string DetectionMode { get; set; } = "FileSystemWatcher";
+        public DateTime? LastScanAt { get; set; }
+        public bool LastScanOk { get; set; } = true;
+        public int ConsecutiveFailures { get; set; }
+        public CancellationTokenSource? PollCts { get; set; }
     }
+
+    private CancellationToken _stoppingToken;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        _stoppingToken = stoppingToken;
         logger.LogInformation("FileWatcherService starting");
         await LoadWatchersAsync();
 
@@ -63,6 +83,7 @@ public class FileWatcherService(
         {
             var settings = await settingsService.GetAsync();
             _sameFileInterval = settings.SameFileIntervalInSeconds;
+            _pollIntervalSeconds = settings.FilePollingIntervalInSeconds;
 
             await using var db = await dbFactory.CreateDbContextAsync();
             var triggers = await db.FileTriggers.Where(t => t.Active).ToListAsync();
@@ -263,6 +284,118 @@ public class FileWatcherService(
         }
     }
 
+    /// <summary>
+    /// Registers a polling-mode watcher entry and starts its scan loop. Not currently called from
+    /// LoadWatchersAsync — the engine is implemented but not yet wired to the global
+    /// FileWatchMethod setting (see docs/file-watch-polling-plan.md, Stage 3).
+    /// </summary>
+    private void StartPolling(WatcherEntry entry, CancellationToken stoppingToken)
+    {
+        entry.DetectionMode = "Polling";
+        entry.LastScanAt = DateTime.Now;
+        entry.Healthy = true;
+        entry.LastScanOk = true;
+
+        var cts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+        entry.PollCts = cts;
+
+        var userInfo = string.IsNullOrEmpty(entry.Trigger.WatcherUsername) ? "app account" : entry.Trigger.WatcherUsername;
+        logger.LogInformation("Polling: {Path} | Filter: {Filter} | Interval: {Interval}s | User: {User}",
+            entry.Trigger.FolderPath, entry.Filter, _pollIntervalSeconds, userInfo);
+
+        _ = Task.Run(() => PollLoopAsync(entry, cts.Token), cts.Token);
+    }
+
+    private async Task PollLoopAsync(WatcherEntry entry, CancellationToken ct)
+    {
+        var interval = TimeSpan.FromSeconds(Math.Max(1, _pollIntervalSeconds));
+
+        try
+        {
+            // Stagger initial scans across the interval window so many folders don't all hit
+            // the file server in the same instant - after this, each folder's loop free-runs
+            // on its own cadence and natural drift between folders is fine.
+            await Task.Delay(Random.Shared.Next(0, (int)interval.TotalMilliseconds), ct);
+
+            while (!ct.IsCancellationRequested)
+            {
+                await _pollSemaphore.WaitAsync(ct);
+                try { ScanFolder(entry); }
+                finally { _pollSemaphore.Release(); }
+
+                await Task.Delay(interval, ct);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Expected on reload (method switch / trigger change) or service shutdown.
+        }
+    }
+
+    private void ScanFolder(WatcherEntry entry)
+    {
+        var trigger = entry.Trigger;
+        var since = entry.LastScanAt ?? DateTime.MinValue;
+        var scanStarted = DateTime.Now;
+
+        try
+        {
+            var candidates = RunAs(trigger.WatcherUsername, trigger.WatcherPassword, () =>
+                Directory.EnumerateFiles(trigger.FolderPath, entry.Filter, SearchOption.TopDirectoryOnly)
+                    .Select(f => (Path: f, Time: MaxTime(File.GetLastWriteTime(f), File.GetCreationTime(f))))
+                    .Where(f => f.Time >= since)
+                    .OrderBy(f => f.Time)
+                    .Take(MaxFilesPerPollScan + 1)
+                    .ToList());
+
+            entry.LastScanOk = true;
+            entry.ConsecutiveFailures = 0;
+            entry.Healthy = true;
+
+            if (candidates.Count == 0)
+            {
+                entry.LastScanAt = scanStarted;
+                return;
+            }
+
+            if (candidates.Count > MaxFilesPerPollScan)
+            {
+                // Only advance LastScanAt to the newest file actually processed this cycle (not
+                // "now") so the files beyond the cap are picked up on the next cycle instead of
+                // being silently skipped.
+                candidates = candidates.Take(MaxFilesPerPollScan).ToList();
+                entry.LastScanAt = candidates[^1].Time;
+                logger.LogWarning(
+                    "Poll scan of {Path} found more than {Max} new file(s) in one cycle; only the oldest {Max} are processed this cycle - the rest will be picked up next cycle",
+                    trigger.FolderPath, MaxFilesPerPollScan, MaxFilesPerPollScan);
+            }
+            else
+            {
+                entry.LastScanAt = scanStarted;
+            }
+
+            foreach (var file in candidates)
+                OnFileEvent(file.Path, trigger);
+        }
+        catch (Exception ex)
+        {
+            entry.LastScanOk = false;
+            entry.Healthy = false;
+            entry.ConsecutiveFailures++;
+
+            // Log the first failures loudly, then throttle to avoid flooding the log while a
+            // share stays offline for a long time.
+            if (entry.ConsecutiveFailures <= 3 || entry.ConsecutiveFailures % 20 == 0)
+                logger.LogError(ex, "Poll scan failed for trigger {Name} on {Path} (attempt {Attempt})",
+                    trigger.TriggerName, trigger.FolderPath, entry.ConsecutiveFailures);
+            else
+                logger.LogDebug("Poll scan for trigger {Name} still failing (attempt {Attempt})",
+                    trigger.TriggerName, entry.ConsecutiveFailures);
+        }
+    }
+
+    private static DateTime MaxTime(DateTime a, DateTime b) => a > b ? a : b;
+
     private void OnFileEvent(string fullPath, FileTrigger trigger)
     {
         if (Path.GetFileName(fullPath).StartsWith("~$")) return;
@@ -368,6 +501,8 @@ public class FileWatcherService(
                 entry.Healthy = false;
                 try { entry.Watcher?.Dispose(); } catch { /* ignore */ }
                 entry.Watcher = null;
+                try { entry.PollCts?.Cancel(); entry.PollCts?.Dispose(); } catch { /* ignore */ }
+                entry.PollCts = null;
             }
             _watchers.Clear();
         }
