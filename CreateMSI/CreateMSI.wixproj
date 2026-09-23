@@ -52,7 +52,7 @@
     <BindInputPaths Include="$(WebAppPublishDir)" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="..\..\CustomActions.Web\CustomActions.Web.csproj">
+    <ProjectReference Include="..\CustomActions.Web\CustomActions.Web.csproj">
       <Name>CustomActionsWeb</Name>
       <Project>{e73a7c1c-5f1a-44e8-a6bd-3f864862e980}</Project>
       <Private>True</Private>
