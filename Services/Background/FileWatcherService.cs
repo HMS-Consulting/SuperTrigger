@@ -61,6 +61,12 @@ public class FileWatcherService(
         public bool LastScanOk { get; set; } = true;
         public int ConsecutiveFailures { get; set; }
         public CancellationTokenSource? PollCts { get; set; }
+
+        // File paths present after the previous successful scan. A file absent from this set is
+        // treated as new even if its timestamps are old - moving a file into the folder preserves
+        // both LastWriteTime and CreationTime, so a timestamp check alone would miss it. Null until
+        // the first scan establishes a baseline.
+        public HashSet<string>? KnownFiles { get; set; }
     }
 
     private CancellationToken _stoppingToken;
@@ -383,39 +389,40 @@ public class FileWatcherService(
 
         try
         {
-            var candidates = RunAs(trigger.WatcherUsername, trigger.WatcherPassword, () =>
+            var files = RunAs(trigger.WatcherUsername, trigger.WatcherPassword, () =>
                 Directory.EnumerateFiles(trigger.FolderPath, entry.Filter, SearchOption.TopDirectoryOnly)
                     .Select(f => (Path: f, Time: MaxTime(File.GetLastWriteTime(f), File.GetCreationTime(f))))
-                    .Where(f => f.Time >= since)
-                    .OrderBy(f => f.Time)
-                    .Take(MaxFilesPerPollScan + 1)
                     .ToList());
 
             entry.LastScanOk = true;
             entry.ConsecutiveFailures = 0;
             entry.Healthy = true;
 
-            if (candidates.Count == 0)
-            {
-                entry.LastScanAt = scanStarted;
-                return;
-            }
+            // New = not seen in the previous scan (e.g. moved in with old timestamps), or
+            // created/modified since the previous scan. On the first scan there is no baseline,
+            // so only the timestamp check applies - pre-existing files are not triggered.
+            var known = entry.KnownFiles;
+            var candidates = files
+                .Where(f => f.Time >= since || (known != null && !known.Contains(f.Path)))
+                .OrderBy(f => f.Time)
+                .ToList();
+
+            var current = new HashSet<string>(files.Select(f => f.Path), StringComparer.OrdinalIgnoreCase);
 
             if (candidates.Count > MaxFilesPerPollScan)
             {
-                // Only advance LastScanAt to the newest file actually processed this cycle (not
-                // "now") so the files beyond the cap are picked up on the next cycle instead of
-                // being silently skipped.
+                // Leave the files beyond the cap out of the known set so the next cycle treats
+                // them as new again instead of silently skipping them.
+                foreach (var skipped in candidates.Skip(MaxFilesPerPollScan))
+                    current.Remove(skipped.Path);
                 candidates = candidates.Take(MaxFilesPerPollScan).ToList();
-                entry.LastScanAt = candidates[^1].Time;
                 logger.LogWarning(
                     "Poll scan of {Path} found more than {Max} new file(s) in one cycle; only the oldest {Max} are processed this cycle - the rest will be picked up next cycle",
                     trigger.FolderPath, MaxFilesPerPollScan, MaxFilesPerPollScan);
             }
-            else
-            {
-                entry.LastScanAt = scanStarted;
-            }
+
+            entry.KnownFiles = current;
+            entry.LastScanAt = scanStarted;
 
             foreach (var file in candidates)
                 OnFileEvent(file.Path, trigger);
