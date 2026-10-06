@@ -13,3 +13,9 @@
 ## Task Workflow
 - **Clear Boundaries:** Complete the requested task and stop. Do not proactively suggest or initiate follow-up implementations.
 - **Context Refresh Prompt:** Prompt the user to run `/compact` or `/clear` if a single session grows beyond 10-15 message turns.
+## Git Workflow for Issues / Features
+- **Temporary Branch Required:** Every ISSUE or FEATURE must be handled on a separate temporary branch (never directly on `main`).
+- **Finish with PR:** After the fix is done, push the branch and open a Pull Request.
+
+## Screenshots
+- **Redact Sensitive Info:** Blur/mask infrastructure details in any screenshot (URLs, network folder paths, usernames, etc.) before adding it to the repo.

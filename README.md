@@ -23,6 +23,7 @@ A .NET 8 Blazor Server application that monitors **email inboxes** and **file sy
   - [Mail Triggers](#mail-triggers)
   - [File Triggers](#file-triggers)
   - [Microsoft Graph (Webhooks)](#microsoft-graph-webhooks)
+- [Screenshots](#screenshots)
 - [Authentication](#authentication)
 - [Trigger Types](#trigger-types)
   - [Mail Triggers](#mail-triggers-1)
@@ -292,6 +293,17 @@ To use Graph-based mail triggers (AppIdGlobal, AppIdPerTrigger, OAuth2Interactiv
 | Public Base URL | Publicly reachable HTTPS URL of this server (e.g. `https://supertrigger.company.com`). Required for webhooks — must not be `localhost`. |
 
 The application registers Microsoft Graph change notification subscriptions on startup and renews them automatically every hour.
+
+---
+
+## Screenshots
+
+| | |
+|---|---|
+| **Login** — local account or Windows (AD) sign-in<br>![Login](docs/images/login.png) | **Dashboard**<br>![Dashboard](docs/images/home.png) |
+| **Mail Triggers**<br>![Mail Triggers](docs/images/mail-triggers.png) | **File Triggers**<br>![File Triggers](docs/images/file-triggers.png) |
+| **Settings** — Orchestrator, Mail, Graph<br>![Settings](docs/images/settings.png) | **Users & Access**<br>![Users & Access](docs/images/users.png) |
+| **Logs**<br>![Logs](docs/images/logs.png) | **Audit Logs**<br>![Audit Logs](docs/images/audit-logs.png) |
 
 ---
 
